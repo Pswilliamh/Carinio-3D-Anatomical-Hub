@@ -1,0 +1,6 @@
+{
+  "name": "Karina CranioTMJ 3D Lab",
+  "description": "Bilingual (EN/ID) vocational training platform for CT segmentation, Hounsfield thresholding, dental scatter artifact cleanup, and 3D TMJ/cranial anatomical modeling.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

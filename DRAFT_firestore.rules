@@ -1,0 +1,310 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 4.1: Global Safety Net (Default-Deny Catch-All)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Reusable Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'PsWilliamh@gmail.com'
+      );
+    }
+
+    // Validation Blueprints (Pillar 2)
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll([
+        'userId',
+        'displayName',
+        'role',
+        'completedModules',
+        'accuracyScore',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'userId',
+        'displayName',
+        'role',
+        'completedModules',
+        'accuracyScore',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.userId is string &&
+      data.userId.size() >= 1 &&
+      data.userId.size() <= 128 &&
+      data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.userId == userId &&
+      data.userId == request.auth.uid &&
+      data.displayName is string &&
+      data.displayName.size() >= 1 &&
+      data.displayName.size() <= 100 &&
+      data.role is string &&
+      data.role.size() >= 5 &&
+      data.role.size() <= 20 &&
+      data.role in ['student', 'technician', 'instructor', 'admin'] &&
+      data.completedModules is list &&
+      data.completedModules.size() <= 10 &&
+      (data.completedModules.size() == 0 || (data.completedModules[0] is string && data.completedModules[0].size() <= 64)) &&
+      data.accuracyScore is number &&
+      data.accuracyScore >= 0 &&
+      data.accuracyScore <= 100 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidSegmentationSession(data, sessionId) {
+      return data.keys().hasAll([
+        'sessionId',
+        'ownerId',
+        'datasetId',
+        'datasetName',
+        'minHU',
+        'maxHU',
+        'scatterCleanedCount',
+        'islandsRemovedCount',
+        'regionGrown',
+        'diceSimilarityScore',
+        'encryptedChecksum',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'sessionId',
+        'ownerId',
+        'datasetId',
+        'datasetName',
+        'minHU',
+        'maxHU',
+        'scatterCleanedCount',
+        'islandsRemovedCount',
+        'regionGrown',
+        'diceSimilarityScore',
+        'encryptedChecksum',
+        'createdAt',
+        'updatedAt'
+      ]) &&
+      data.sessionId is string &&
+      data.sessionId.size() >= 1 &&
+      data.sessionId.size() <= 128 &&
+      data.sessionId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.sessionId == sessionId &&
+      data.ownerId is string &&
+      data.ownerId.size() >= 1 &&
+      data.ownerId.size() <= 128 &&
+      data.ownerId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.ownerId == request.auth.uid &&
+      data.datasetId is string &&
+      data.datasetId.size() >= 1 &&
+      data.datasetId.size() <= 64 &&
+      data.datasetName is string &&
+      data.datasetName.size() >= 1 &&
+      data.datasetName.size() <= 120 &&
+      data.minHU is number &&
+      data.minHU >= -1024 &&
+      data.minHU <= 4000 &&
+      data.maxHU is number &&
+      data.maxHU >= -1024 &&
+      data.maxHU <= 4000 &&
+      data.scatterCleanedCount is number &&
+      data.scatterCleanedCount >= 0 &&
+      data.islandsRemovedCount is number &&
+      data.islandsRemovedCount >= 0 &&
+      data.regionGrown is bool &&
+      data.diceSimilarityScore is number &&
+      data.diceSimilarityScore >= 0 &&
+      data.diceSimilarityScore <= 100 &&
+      data.encryptedChecksum is string &&
+      data.encryptedChecksum.size() >= 8 &&
+      data.encryptedChecksum.size() <= 128 &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidAuditLogEntry(data, logId) {
+      return data.keys().hasAll([
+        'logId',
+        'actorUid',
+        'actorName',
+        'actionType',
+        'moduleName',
+        'details',
+        'encryptedHash',
+        'accuracyMm',
+        'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'logId',
+        'actorUid',
+        'actorName',
+        'actionType',
+        'moduleName',
+        'details',
+        'encryptedHash',
+        'accuracyMm',
+        'createdAt'
+      ]) &&
+      data.logId is string &&
+      data.logId.size() >= 1 &&
+      data.logId.size() <= 128 &&
+      data.logId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.logId == logId &&
+      data.actorUid is string &&
+      data.actorUid.size() >= 1 &&
+      data.actorUid.size() <= 128 &&
+      data.actorUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.actorUid == request.auth.uid &&
+      data.actorName is string &&
+      data.actorName.size() >= 1 &&
+      data.actorName.size() <= 100 &&
+      data.actionType is string &&
+      data.actionType.size() >= 3 &&
+      data.actionType.size() <= 40 &&
+      data.actionType in [
+        'DISCLAIMER_ACK',
+        'THRESHOLD_UPDATE',
+        'SCATTER_CLEANUP',
+        'REGION_GROW',
+        'ISLAND_REMOVAL',
+        'MESH_EXPORT',
+        'CALIBRATION_MEASURE',
+        'CLOUD_SYNC',
+        'PROSTHETIC_ALIGN'
+      ] &&
+      data.moduleName is string &&
+      data.moduleName.size() >= 1 &&
+      data.moduleName.size() <= 100 &&
+      data.details is string &&
+      data.details.size() >= 1 &&
+      data.details.size() <= 500 &&
+      data.encryptedHash is string &&
+      data.encryptedHash.size() >= 8 &&
+      data.encryptedHash.size() <= 128 &&
+      data.accuracyMm is number &&
+      data.accuracyMm >= 0.5 &&
+      data.accuracyMm <= 1.0 &&
+      data.createdAt is timestamp;
+    }
+
+    // Collection 1: /users/{userId}
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role in ['student', 'technician'] || isAdmin());
+
+      allow update: if isVerifiedUser() &&
+        isValidId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().userId == existing().userId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Learner updates own progress and displayName (cannot self-escalate role)
+          (isOwner(userId) &&
+           incoming().role == existing().role &&
+           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'completedModules', 'accuracyScore', 'updatedAt'])) ||
+          // Action 2: Admin escape hatch
+          isAdmin()
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(userId) && isAdmin();
+    }
+
+    // Collection 2: /sessions/{sessionId}
+    match /sessions/{sessionId} {
+      allow get: if isSignedIn() && isValidId(sessionId) && (existing().ownerId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().ownerId == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(sessionId) &&
+        isValidSegmentationSession(incoming(), sessionId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if isVerifiedUser() &&
+        isValidId(sessionId) &&
+        isValidSegmentationSession(incoming(), sessionId) &&
+        incoming().sessionId == existing().sessionId &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          // Action 1: Owner updates segmentation parameters and score
+          (existing().ownerId == request.auth.uid &&
+           incoming().diff(existing()).affectedKeys().hasOnly([
+             'datasetId',
+             'datasetName',
+             'minHU',
+             'maxHU',
+             'scatterCleanedCount',
+             'islandsRemovedCount',
+             'regionGrown',
+             'diceSimilarityScore',
+             'encryptedChecksum',
+             'updatedAt'
+           ])) ||
+          // Action 2: Admin override
+          isAdmin()
+        );
+
+      allow delete: if isVerifiedUser() && isValidId(sessionId) && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // Collection 3: /auditLogs/{logId}
+    match /auditLogs/{logId} {
+      allow get: if isSignedIn() && isValidId(logId) && (existing().actorUid == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (existing().actorUid == request.auth.uid || isAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(logId) &&
+        isValidAuditLogEntry(incoming(), logId) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      // Audit logs are strictly immutable
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // Collection 4: /admins/{adminId}
+    match /admins/{adminId} {
+      allow get: if isSignedIn() && isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+  }
+}

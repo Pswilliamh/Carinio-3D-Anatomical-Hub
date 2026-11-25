@@ -1,0 +1,242 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Vocational student, technician, or instructor profile with RBAC role and lab progress.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name of the learner or technician.",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "role": {
+          "type": "string",
+          "description": "Role-based access control tier.",
+          "enum": ["student", "technician", "instructor", "admin"],
+          "minLength": 5,
+          "maxLength": 20
+        },
+        "completedModules": {
+          "type": "array",
+          "description": "Bounded list of completed lab module IDs (max 10)."
+        },
+        "accuracyScore": {
+          "type": "number",
+          "description": "Latest 3D mesh comparison Dice accuracy score (0-100)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of last update."
+        }
+      },
+      "required": ["userId", "displayName", "role", "completedModules", "accuracyScore", "createdAt", "updatedAt"]
+    },
+    "SegmentationSession": {
+      "title": "SegmentationSession",
+      "description": "Cloud-synchronized CT segmentation, scatter cleanup, and 3D anatomical modeling state.",
+      "type": "object",
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "datasetId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "datasetName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "minHU": {
+          "type": "number",
+          "description": "Minimum Hounsfield Unit threshold."
+        },
+        "maxHU": {
+          "type": "number",
+          "description": "Maximum Hounsfield Unit threshold."
+        },
+        "scatterCleanedCount": {
+          "type": "number",
+          "description": "Number of dental scatter voxels removed."
+        },
+        "islandsRemovedCount": {
+          "type": "number",
+          "description": "Number of isolated noise islands removed."
+        },
+        "regionGrown": {
+          "type": "boolean",
+          "description": "Whether mandible/condyle region growing separation was applied."
+        },
+        "diceSimilarityScore": {
+          "type": "number",
+          "description": "Comparison score against expert reference mesh (0-100)."
+        },
+        "encryptedChecksum": {
+          "type": "string",
+          "description": "AES-GCM / SHA-256 integrity digest of the synchronized session payload.",
+          "minLength": 8,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "sessionId",
+        "ownerId",
+        "datasetId",
+        "datasetName",
+        "minHU",
+        "maxHU",
+        "scatterCleanedCount",
+        "islandsRemovedCount",
+        "regionGrown",
+        "diceSimilarityScore",
+        "encryptedChecksum",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AuditLogEntry": {
+      "title": "AuditLogEntry",
+      "description": "Immutable security and clinical training audit log entry with PDF report export capability.",
+      "type": "object",
+      "properties": {
+        "logId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "actorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "actionType": {
+          "type": "string",
+          "enum": [
+            "DISCLAIMER_ACK",
+            "THRESHOLD_UPDATE",
+            "SCATTER_CLEANUP",
+            "REGION_GROW",
+            "ISLAND_REMOVAL",
+            "MESH_EXPORT",
+            "CALIBRATION_MEASURE",
+            "CLOUD_SYNC",
+            "PROSTHETIC_ALIGN"
+          ],
+          "minLength": 3,
+          "maxLength": 40
+        },
+        "moduleName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "details": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "encryptedHash": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 128
+        },
+        "accuracyMm": {
+          "type": "number",
+          "description": "Calibration precision in millimeters (0.5 to 1.0 mm)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "logId",
+        "actorUid",
+        "actorName",
+        "actionType",
+        "moduleName",
+        "details",
+        "encryptedHash",
+        "accuracyMm",
+        "createdAt"
+      ]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin registry document.",
+      "type": "object",
+      "properties": {
+        "adminId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["adminId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Learner and technician user profiles."
+    },
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/SegmentationSession" },
+      "description": "Synchronized CT segmentation and 3D TMJ modeling workspace sessions."
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLogEntry" },
+      "description": "Immutable training audit logs for compliance and PDF export."
+    },
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted administrator lookup collection."
+    }
+  }
+}
