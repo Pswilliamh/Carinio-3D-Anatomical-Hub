@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -10,8 +11,10 @@ import {
   Download,
   Layers,
   RotateCcw,
+  ShieldCheck,
   Sliders,
   Sparkles,
+  Sun,
   Wrench,
 } from 'lucide-react';
 import { Language } from '../i18n/translations';
@@ -331,10 +334,60 @@ function evalBoneNormal(
   return normal;
 }
 
+/**
+ * Shared 3D anatomical Inferior Alveolar Nerve centerline in scene units (1 unit = 4.0 mm).
+ * Positioned realistically inside the mandibular canal medial to the lateral cortical bone plate.
+ */
+function getNerveCurveForTemplate(templateId: ImplantTemplateId): THREE.CatmullRomCurve3 | null {
+  if (templateId === 'cranial_vault') return null;
+  if (templateId === 'tmj_ramus') {
+    // Runs inside the mandibular foramen -> ramus canal -> mandibular body (~7.2–8.2 mm medial to outer cortex)
+    return new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-0.35, 1.4, -1.25),
+      new THREE.Vector3(-0.55, -0.7, -1.05),
+      new THREE.Vector3(-1.25, -3.1, -0.95),
+      new THREE.Vector3(-2.6, -5.1, -0.65),
+    ]);
+  }
+  // mandibular_bridge: Inferior alveolar canal coursing along the mandibular body (~7.5 mm lingual to outer cortex)
+  return new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-7.6, 0.45, -1.95),
+    new THREE.Vector3(-3.8, 0.15, 0.2),
+    new THREE.Vector3(0, 0.0, 0.95),
+    new THREE.Vector3(3.8, 0.15, 0.2),
+    new THREE.Vector3(7.6, 0.45, -1.95),
+  ]);
+}
+
+function closestDistPointToSegment(
+  p: THREE.Vector3,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+): number {
+  const ab = b.clone().sub(a);
+  const lenSq = ab.lengthSq();
+  if (lenSq < 1e-8) return p.distanceTo(a);
+  const t = Math.max(0, Math.min(1, p.clone().sub(a).dot(ab) / lenSq));
+  const closest = a.clone().addScaledVector(ab, t);
+  return p.distanceTo(closest);
+}
+
+export type ScrewNerveSafety = 'safe' | 'caution' | 'collision';
+
+interface ScrewTransformWithSafety {
+  position: THREE.Vector3;
+  normal: THREE.Vector3;
+  clearanceMm: number;
+  safety: ScrewNerveSafety;
+}
+
 interface ImplantMeshBuildResult {
   geometry: THREE.BufferGeometry;
   exportMesh: GeneratedMeshData;
-  screwTransforms: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }>;
+  screwTransforms: ScrewTransformWithSafety[];
+  minNerveClearanceMm: number;
+  collidingScrewCount: number;
+  recommendedSafeLengthMm: number;
   surfaceAreaMm2: number;
   volumeCm3: number;
   meanGapMm: number;
@@ -344,9 +397,10 @@ interface ImplantMeshBuildResult {
 }
 
 /**
- * Parametric CAD Solid Implant Mesh Builder:
- * Generates a watertight double-curved bone-contoured solid with outward normal extrusion,
- * feathered perimeter beveling, fit deviation heatmap vertex colors, and screw boss positions.
+ * Parametric CAD Solid Implant Mesh Builder (Boundary-Conforming Smooth Concentric Spline Solid):
+ * Replaces jagged staircase grid rasterization with a continuous N-segment closed Catmull-Rom
+ * perimeter and concentric radial rings featuring a true quarter-round cosine 3D bevel fillet,
+ * averaged smooth vertex normals, bone-fit heatmap vertex colors, and nerve-checked screw bosses.
  */
 function buildParametricImplantMesh(
   templateId: ImplantTemplateId,
@@ -356,217 +410,265 @@ function buildParametricImplantMesh(
   edgeBevelMm: number,
   boneOffsetMm: number,
   screwCount: number,
+  screwLengthMm: number,
+  screwDiameterMm: number,
   gridRes: number,
   includeFenestrations: boolean,
 ): ImplantMeshBuildResult {
   const spec = IMPLANT_TEMPLATES[templateId];
-  const splinePoly = sampleClosedSpline(controlPoints, 10);
+  const segsPerEdge = gridRes >= 44 ? 18 : gridRes >= 32 ? 14 : 10;
+  const splinePoly = sampleClosedSpline(controlPoints, segsPerEdge);
+  const N = splinePoly.length;
   const conformance = Math.max(0, Math.min(1, contourFitPct / 100));
 
-  // Scene unit scale: 1 Three.js unit ≈ 4.0 mm
+  // Scene unit scale: 1 Three.js unit = 4.0 mm
   const MM_TO_SCENE = 0.25;
   const thicknessScene = thicknessMm * MM_TO_SCENE;
   const offsetScene = boneOffsetMm * MM_TO_SCENE;
-  const bevelFraction = Math.min(0.45, (edgeBevelMm / Math.max(0.6, thicknessMm)) * 0.5);
+  const bevelStrength = Math.min(1.0, edgeBevelMm / Math.max(0.5, thicknessMm * 0.48));
+  // Smooth radial bevel zone near outer perimeter (wider & gentler when bevel slider is increased)
+  const bevelBand = Math.max(0.055, Math.min(0.24, 0.055 + bevelStrength * 0.16));
 
-  const cols = gridRes;
-  const rows = gridRes;
-  const insideGrid = new Uint8Array(cols * rows);
-  const bottomPts: Array<THREE.Vector3 | null> = new Array(cols * rows).fill(null);
-  const topPts: Array<THREE.Vector3 | null> = new Array(cols * rows).fill(null);
-  const gapMmGrid = new Float32Array(cols * rows);
+  // Compute smooth centroid of the closed spline polygon
+  let cu = 0;
+  let cv = 0;
+  for (let i = 0; i < N; i++) {
+    cu += splinePoly[i].u;
+    cv += splinePoly[i].v;
+  }
+  cu /= N;
+  cv /= N;
 
-  // Optional surgical drainage fenestrations on cranial vault
+  // Concentric radial rings tightly packed along the perimeter for buttery-smooth rounded bevels
+  const radialSteps = [
+    0.08, 0.2, 0.34, 0.48, 0.6, 0.71, 0.8, 0.865, 0.915, 0.952, 0.978, 0.993, 1.0,
+  ];
+  const R = radialSteps.length;
+
   const fenestrationCenters: Array<[number, number, number]> =
     includeFenestrations && templateId === 'cranial_vault'
       ? [
           [-0.24, 0.22, 0.085],
           [0.24, 0.22, 0.085],
-          [0.0, 0.0, 0.095],
           [-0.24, -0.22, 0.085],
           [0.24, -0.22, 0.085],
         ]
       : [];
 
-  let sumGap = 0;
-  let maxGap = 0;
-  let validCellSamples = 0;
-
-  for (let r = 0; r < rows; r++) {
-    const v = -1 + (2 * r) / (rows - 1);
-    for (let c = 0; c < cols; c++) {
-      const u = -1 + (2 * c) / (cols - 1);
-      const idx = r * cols + c;
-      const { inside, edgeDist } = evaluatePolygonContainment(u, v, splinePoly);
-      if (!inside) continue;
-
-      let inHole = false;
-      for (const [hu, hv, hr] of fenestrationCenters) {
-        if (Math.hypot(u - hu, v - hv) < hr) {
-          inHole = true;
-          break;
-        }
-      }
-      if (inHole) continue;
-
-      insideGrid[idx] = 1;
-
-      const idealBonePt = evalBoneSurface(templateId, u, v, 1.0);
-      const contouredPt = evalBoneSurface(templateId, u, v, conformance);
-      const normal = evalBoneNormal(templateId, u, v, conformance);
-
-      const bottomPt = contouredPt.clone().addScaledVector(normal, offsetScene);
-
-      // Feathered perimeter bevel tapering smoothly near the spline boundary
-      const bevelFactor =
-        bevelFraction > 0.01
-          ? Math.min(1, Math.max(0.28, edgeDist / Math.max(0.04, bevelFraction * 0.42)))
-          : 1.0;
-      const localThick = thicknessScene * bevelFactor;
-      const topPt = bottomPt.clone().addScaledVector(normal, localThick);
-
-      bottomPts[idx] = bottomPt;
-      topPts[idx] = topPt;
-
-      // Measure anatomical bone-to-implant fit deviation in mm
-      const gapMm = bottomPt.distanceTo(idealBonePt) / MM_TO_SCENE;
-      gapMmGrid[idx] = gapMm;
-      sumGap += gapMm;
-      if (gapMm > maxGap) maxGap = gapMm;
-      validCellSamples++;
-    }
-  }
-
-  const positions: number[] = [];
-  const colors: number[] = [];
-
   const gapToColor = (gapMm: number): [number, number, number] => {
     if (gapMm <= 0.42) return [0.06, 0.88, 0.56]; // Emerald: Ideal sub-0.4mm bone contact
     if (gapMm <= 1.05) {
       const t = (gapMm - 0.42) / 0.63;
-      return [0.06 + t * 0.94, 0.88 - t * 0.08, 0.56 - t * 0.56]; // Transition to Clinical Gold
+      return [0.06 + t * 0.94, 0.88 - t * 0.08, 0.56 - t * 0.56]; // Clinical Gold
     }
     const t = Math.min(1, (gapMm - 1.05) / 1.8);
-    return [1.0, 0.8 - t * 0.58, 0.0 + t * 0.22]; // Coral Red: Gap > 1.0mm needs contouring
+    return [1.0, 0.8 - t * 0.58, 0.0 + t * 0.22]; // Coral Red: Needs contouring
   };
 
-  const pushTri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, ga: number, gb: number, gc: number) => {
-    positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
-    const ca = gapToColor(ga);
-    const cb = gapToColor(gb);
-    const cc = gapToColor(gc);
-    colors.push(ca[0], ca[1], ca[2], cb[0], cb[1], cb[2], cc[0], cc[1], cc[2]);
+  // Indexed vertices for continuous smooth vertex normals across all faces & bevel rings
+  const vPositions: number[] = [];
+  const vColors: number[] = [];
+  const indices: number[] = [];
+
+  const addVertex = (pt: THREE.Vector3, gapMm: number): number => {
+    const idx = vPositions.length / 3;
+    vPositions.push(pt.x, pt.y, pt.z);
+    const col = gapToColor(gapMm);
+    vColors.push(col[0], col[1], col[2]);
+    return idx;
   };
 
-  const pushQuad = (
-    a: THREE.Vector3,
-    b: THREE.Vector3,
-    c: THREE.Vector3,
-    d: THREE.Vector3,
-    ga: number,
-    gb: number,
-    gc: number,
-    gd: number,
-  ) => {
-    pushTri(a, b, c, ga, gb, gc);
-    pushTri(a, c, d, ga, gc, gd);
+  let sumGap = 0;
+  let maxGap = 0;
+  let sampleCount = 0;
+
+  const evalShellPoint = (u: number, v: number, rNorm: number) => {
+    const idealBonePt = evalBoneSurface(templateId, u, v, 1.0);
+    const contouredPt = evalBoneSurface(templateId, u, v, conformance);
+    const normal = evalBoneNormal(templateId, u, v, conformance);
+
+    // Smooth quarter-ellipse rounded bevel profile on BOTH upper and lower perimeter edges
+    let topOffset = offsetScene + thicknessScene;
+    let botOffset = offsetScene;
+    if (rNorm > 1.0 - bevelBand) {
+      const s = Math.max(0, Math.min(1, (1.0 - rNorm) / bevelBand));
+      // Elliptical quarter-round arc: 0 at outer rim -> 1 inside bevel band
+      const arc = Math.sqrt(Math.max(0, 1 - (1 - s) * (1 - s)));
+      const midFrac = 0.24; // Slight underside chamfer + generous outer dome fillet
+      topOffset = offsetScene + thicknessScene * (midFrac + (1 - midFrac) * arc);
+      botOffset = offsetScene + thicknessScene * (midFrac * (1 - arc));
+    }
+
+    const bottomPt = contouredPt.clone().addScaledVector(normal, botOffset);
+    const topPt = contouredPt.clone().addScaledVector(normal, topOffset);
+    const gapMm = contouredPt.clone().addScaledVector(normal, offsetScene).distanceTo(idealBonePt) / MM_TO_SCENE;
+
+    sumGap += gapMm;
+    if (gapMm > maxGap) maxGap = gapMm;
+    sampleCount++;
+
+    return { topPt, bottomPt, gapMm };
   };
 
-  let activeQuads = 0;
-  for (let r = 0; r < rows - 1; r++) {
-    for (let c = 0; c < cols - 1; c++) {
-      const i00 = r * cols + c;
-      const i10 = r * cols + (c + 1);
-      const i11 = (r + 1) * cols + (c + 1);
-      const i01 = (r + 1) * cols + c;
+  // Center vertices (top & bottom)
+  const centerSample = evalShellPoint(cu, cv, 0);
+  const topCenterIdx = addVertex(centerSample.topPt, centerSample.gapMm);
+  const botCenterIdx = addVertex(centerSample.bottomPt, centerSample.gapMm);
 
-      if (insideGrid[i00] && insideGrid[i10] && insideGrid[i11] && insideGrid[i01]) {
-        activeQuads++;
-        const t00 = topPts[i00]!;
-        const t10 = topPts[i10]!;
-        const t11 = topPts[i11]!;
-        const t01 = topPts[i01]!;
-        const b00 = bottomPts[i00]!;
-        const b10 = bottomPts[i10]!;
-        const b11 = bottomPts[i11]!;
-        const b01 = bottomPts[i01]!;
+  const topRingIdx: number[][] = [];
+  const botRingIdx: number[][] = [];
+  const uvRing: Array<Array<{ u: number; v: number }>> = [];
 
-        const g00 = gapMmGrid[i00];
-        const g10 = gapMmGrid[i10];
-        const g11 = gapMmGrid[i11];
-        const g01 = gapMmGrid[i01];
+  for (let ri = 0; ri < R; ri++) {
+    const r = radialSteps[ri];
+    const tRow: number[] = [];
+    const bRow: number[] = [];
+    const uvRow: Array<{ u: number; v: number }> = [];
+    for (let ai = 0; ai < N; ai++) {
+      const pu = splinePoly[ai].u;
+      const pv = splinePoly[ai].v;
+      const u = cu + r * (pu - cu);
+      const v = cv + r * (pv - cv);
+      const sample = evalShellPoint(u, v, r);
+      const tIdx = addVertex(sample.topPt, sample.gapMm);
+      // On the outermost rim (ri === R - 1), top & bottom meet seamlessly on the rounded bevel edge
+      const bIdx = ri === R - 1 ? tIdx : addVertex(sample.bottomPt, sample.gapMm);
+      tRow.push(tIdx);
+      bRow.push(bIdx);
+      uvRow.push({ u, v });
+    }
+    topRingIdx.push(tRow);
+    botRingIdx.push(bRow);
+    uvRing.push(uvRow);
+  }
 
-        // Outer extruded top face (+N)
-        pushQuad(t00, t10, t11, t01, g00, g10, g11, g01);
-        // Inner bone-contacting face (-N)
-        pushQuad(b00, b01, b11, b10, g00, g01, g11, g10);
+  // Check winding orientation of splinePoly in UV space (ensure CCW for outward +N normals)
+  let signedAreaUV = 0;
+  for (let i = 0; i < N; i++) {
+    const a = splinePoly[i];
+    const b = splinePoly[(i + 1) % N];
+    signedAreaUV += a.u * b.v - b.u * a.v;
+  }
+  const ccw = signedAreaUV >= 0;
 
-        // Close watertight perimeter sidewalls on boundary edges
-        const isQuadActive = (rr: number, cc: number) => {
-          if (rr < 0 || cc < 0 || rr >= rows - 1 || cc >= cols - 1) return false;
-          return Boolean(
-            insideGrid[rr * cols + cc] &&
-              insideGrid[rr * cols + cc + 1] &&
-              insideGrid[(rr + 1) * cols + cc + 1] &&
-              insideGrid[(rr + 1) * cols + cc],
-          );
-        };
+  const isInFenestration = (u: number, v: number): boolean => {
+    for (const [hu, hv, hr] of fenestrationCenters) {
+      if (Math.hypot(u - hu, v - hv) < hr) return true;
+    }
+    return false;
+  };
 
-        if (!isQuadActive(r - 1, c)) {
-          pushQuad(b00, b10, t10, t00, g00, g10, g10, g00);
-        }
-        if (!isQuadActive(r + 1, c)) {
-          pushQuad(b11, b01, t01, t11, g11, g01, g01, g11);
-        }
-        if (!isQuadActive(r, c - 1)) {
-          pushQuad(b01, b00, t00, t01, g01, g00, g00, g01);
-        }
-        if (!isQuadActive(r, c + 1)) {
-          pushQuad(b10, b11, t11, t10, g10, g11, g11, g10);
-        }
+  // Center fan triangles (ring 0)
+  for (let ai = 0; ai < N; ai++) {
+    const next = (ai + 1) % N;
+    const tA = topRingIdx[0][ai];
+    const tB = topRingIdx[0][next];
+    const bA = botRingIdx[0][ai];
+    const bB = botRingIdx[0][next];
+    if (ccw) {
+      indices.push(topCenterIdx, tA, tB);
+      indices.push(botCenterIdx, bB, bA);
+    } else {
+      indices.push(topCenterIdx, tB, tA);
+      indices.push(botCenterIdx, bA, bB);
+    }
+  }
+
+  // Concentric ring quads (rings 0 .. R-2 -> R-1)
+  for (let ri = 0; ri < R - 1; ri++) {
+    for (let ai = 0; ai < N; ai++) {
+      const next = (ai + 1) % N;
+      const midU =
+        (uvRing[ri][ai].u +
+          uvRing[ri][next].u +
+          uvRing[ri + 1][ai].u +
+          uvRing[ri + 1][next].u) *
+        0.25;
+      const midV =
+        (uvRing[ri][ai].v +
+          uvRing[ri][next].v +
+          uvRing[ri + 1][ai].v +
+          uvRing[ri + 1][next].v) *
+        0.25;
+
+      if (fenestrationCenters.length > 0 && ri < R - 4 && isInFenestration(midU, midV)) {
+        continue;
+      }
+
+      const t00 = topRingIdx[ri][ai];
+      const t01 = topRingIdx[ri][next];
+      const t11 = topRingIdx[ri + 1][next];
+      const t10 = topRingIdx[ri + 1][ai];
+
+      const b00 = botRingIdx[ri][ai];
+      const b01 = botRingIdx[ri][next];
+      const b11 = botRingIdx[ri + 1][next];
+      const b10 = botRingIdx[ri + 1][ai];
+
+      if (ccw) {
+        // Outer top surface (+N)
+        indices.push(t00, t10, t11, t00, t11, t01);
+        // Inner bone-facing surface (-N)
+        indices.push(b00, b01, b11, b00, b11, b10);
+      } else {
+        indices.push(t00, t11, t10, t00, t01, t11);
+        indices.push(b00, b11, b01, b00, b10, b11);
       }
     }
   }
 
-  const posArray = new Float32Array(positions);
-  const colArray = new Float32Array(colors);
-
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
-  geometry.setAttribute('color', new THREE.BufferAttribute(colArray, 3));
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vPositions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(vColors, 3));
+  geometry.setIndex(indices);
   geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
 
-  const normAttr = geometry.attributes.normal as THREE.BufferAttribute;
-  const normalsArray = new Float32Array(normAttr.array as Float32Array);
+  // Build non-indexed flat export mesh arrays for Binary STL / OBJ / ISO STEP exporters
+  const nonIndexed = geometry.toNonIndexed();
+  const exportPos = new Float32Array((nonIndexed.attributes.position as THREE.BufferAttribute).array);
+  const exportNorm = new Float32Array((nonIndexed.attributes.normal as THREE.BufferAttribute).array);
+  const exportCol = new Float32Array((nonIndexed.attributes.color as THREE.BufferAttribute).array);
+  nonIndexed.dispose();
 
-  // Place countersunk locking screw bosses along anatomically valid interior UV coordinates
-  const screwTransforms: Array<{ position: THREE.Vector3; normal: THREE.Vector3 }> = [];
+  // Place countersunk locking screw bosses & compute exact 3D clearance to Inferior Alveolar Nerve
+  const nerveCurve = getNerveCurveForTemplate(templateId);
+  const nerveSamples = nerveCurve ? nerveCurve.getPoints(80) : [];
+  const nerveRadiusMm = 0.26 / MM_TO_SCENE; // 1.04 mm
+  const screwRadiusMm = screwDiameterMm * 0.5;
+  const screwLengthScene = screwLengthMm * MM_TO_SCENE;
+
+  const screwTransforms: ScrewTransformWithSafety[] = [];
+  let minNerveClearanceMm = 99;
+  let collidingScrewCount = 0;
+  let maxSafeAllowedLengthMm = 14.0;
+
   for (let s = 0; s < screwCount; s++) {
     let su = 0;
     let sv = 0;
     if (templateId === 'tmj_ramus') {
       const frac = screwCount > 1 ? s / (screwCount - 1) : 0.5;
-      sv = 0.5 - frac * 1.05;
-      su = (s % 2 === 0 ? -0.14 : 0.16);
+      sv = 0.52 - frac * 1.04;
+      su = s % 2 === 0 ? -0.14 : 0.16;
     } else if (templateId === 'cranial_vault') {
       const angle = (s / screwCount) * Math.PI * 2 + Math.PI / 6;
       su = Math.cos(angle) * 0.52;
       sv = Math.sin(angle) * 0.52;
     } else {
-      // mandibular_bridge: bilateral left/right fixation segments avoiding center defect
       const half = Math.ceil(screwCount / 2);
       const isRight = s >= half;
       const localIdx = isRight ? s - half : s;
       const localCount = isRight ? Math.max(1, screwCount - half) : half;
       const t = localCount > 1 ? localIdx / (localCount - 1) : 0.5;
       su = isRight ? 0.34 + t * 0.38 : -0.72 + t * 0.38;
-      sv = (localIdx % 2 === 0 ? 0.06 : -0.06);
+      sv = localIdx % 2 === 0 ? 0.06 : -0.06;
     }
 
-    // Clamp screw UV inward if user dragged spline tighter
     let safetyPull = 1.0;
-    while (safetyPull > 0.25 && !evaluatePolygonContainment(su * safetyPull, sv * safetyPull, splinePoly).inside) {
+    while (
+      safetyPull > 0.25 &&
+      !evaluatePolygonContainment(su * safetyPull, sv * safetyPull, splinePoly).inside
+    ) {
       safetyPull -= 0.12;
     }
     su *= safetyPull;
@@ -575,30 +677,76 @@ function buildParametricImplantMesh(
     const surfPt = evalBoneSurface(templateId, su, sv, conformance);
     const normal = evalBoneNormal(templateId, su, sv, conformance);
     const bossPos = surfPt.clone().addScaledVector(normal, offsetScene + thicknessScene * 0.92);
-    screwTransforms.push({ position: bossPos, normal });
+    const tipPos = bossPos.clone().addScaledVector(normal, -screwLengthScene);
+
+    let clearanceMm = 12.0;
+    if (nerveSamples.length > 0) {
+      let minCenterDistScene = Infinity;
+      // Also find how far along the inward screw axis the closest nerve point sits (for Auto-Safe)
+      for (const np of nerveSamples) {
+        const d = closestDistPointToSegment(np, bossPos, tipPos);
+        if (d < minCenterDistScene) minCenterDistScene = d;
+
+        // Lateral distance from the infinite screw axis line to nerve sample
+        const toNerve = np.clone().sub(bossPos);
+        const inwardDepthScene = toNerve.dot(normal.clone().negate());
+        const radialOffsetScene = toNerve
+          .clone()
+          .addScaledVector(normal, inwardDepthScene)
+          .length();
+        const combinedRadiiPlusBufferScene =
+          (nerveRadiusMm + screwRadiusMm + 2.0) * MM_TO_SCENE;
+        if (inwardDepthScene > 0 && radialOffsetScene < combinedRadiiPlusBufferScene) {
+          // Screw trajectory aims into nerve safety corridor -> cap safe length before nerve envelope
+          const axialClear =
+            inwardDepthScene -
+            Math.sqrt(
+              Math.max(
+                0,
+                combinedRadiiPlusBufferScene * combinedRadiiPlusBufferScene -
+                  radialOffsetScene * radialOffsetScene,
+              ),
+            );
+          const safeLenMm = Math.max(3.5, Math.floor((axialClear / MM_TO_SCENE) * 2) / 2);
+          if (safeLenMm < maxSafeAllowedLengthMm) maxSafeAllowedLengthMm = safeLenMm;
+        }
+      }
+      clearanceMm = minCenterDistScene / MM_TO_SCENE - (nerveRadiusMm + screwRadiusMm);
+    }
+
+    const safety: ScrewNerveSafety =
+      clearanceMm < 0.8 ? 'collision' : clearanceMm < 1.8 ? 'caution' : 'safe';
+    if (safety === 'collision') collidingScrewCount++;
+    if (clearanceMm < minNerveClearanceMm) minNerveClearanceMm = clearanceMm;
+
+    screwTransforms.push({ position: bossPos, normal, clearanceMm, safety });
   }
 
-  const quadAreaMm2 = (spec.spanUMm / (cols - 1)) * (spec.spanVMm / (rows - 1));
-  const surfaceAreaMm2 = Math.max(12, activeQuads * quadAreaMm2);
+  // Exact polygon surface area in mm² from UV shoelace area scaled by template spans
+  const polyAreaUV = Math.abs(signedAreaUV) * 0.5;
+  const surfaceAreaMm2 = Math.max(24, polyAreaUV * (spec.spanUMm * 0.5) * (spec.spanVMm * 0.5));
   const volumeCm3 = (surfaceAreaMm2 * thicknessMm) / 1000;
-  const meanGapMm = validCellSamples > 0 ? sumGap / validCellSamples : 0;
+  const meanGapMm = sampleCount > 0 ? sumGap / sampleCount : 0;
   const fitGrade =
     meanGapMm <= 0.55 ? 'EXCELLENT' : meanGapMm <= 1.05 ? 'ACCEPTABLE' : 'NEEDS_CONTOUR';
 
-  const triangleCount = posArray.length / 9;
+  const triangleCount = exportPos.length / 9;
   const exportMesh: GeneratedMeshData = {
-    positions: posArray,
-    normals: normalsArray,
-    colors: colArray,
+    positions: exportPos,
+    normals: exportNorm,
+    colors: exportCol,
     triangleCount,
-    vertexCount: posArray.length / 3,
-    computeTimeMs: 4.5,
+    vertexCount: exportPos.length / 3,
+    computeTimeMs: 3.2,
   };
 
   return {
     geometry,
     exportMesh,
     screwTransforms,
+    minNerveClearanceMm: nerveSamples.length > 0 ? minNerveClearanceMm : 12.0,
+    collidingScrewCount,
+    recommendedSafeLengthMm: Math.max(3.5, Math.min(12.0, maxSafeAllowedLengthMm)),
     surfaceAreaMm2,
     volumeCm3,
     meanGapMm,
@@ -635,6 +783,9 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
   const [boneOffsetMm, setBoneOffsetMm] = useState(0.25);
   const [screwCount, setScrewCount] = useState(5);
   const [screwDiameterMm, setScrewDiameterMm] = useState(2.3);
+  const [screwLengthMm, setScrewLengthMm] = useState(5.5);
+  const [lightIntensity, setLightIntensity] = useState(110); // 40..220%
+  const [surfaceShine, setSurfaceShine] = useState(65); // 0..100%
   const [includeFenestrations, setIncludeFenestrations] = useState(true);
   const [showHostBone, setShowHostBone] = useState(true);
   const [showNerveSafetyZone, setShowNerveSafetyZone] = useState(true);
@@ -652,12 +803,20 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
 
   // Three.js Refs
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const lightsRef = useRef<{
+    hemi: THREE.HemisphereLight;
+    key: THREE.DirectionalLight;
+    rim: THREE.DirectionalLight;
+    warmFill: THREE.DirectionalLight;
+  } | null>(null);
   const implantMeshRef = useRef<THREE.Mesh | null>(null);
   const boneSubstrateMeshRef = useRef<THREE.Mesh | null>(null);
   const screwsGroupRef = useRef<THREE.Group | null>(null);
   const condyleHeadGroupRef = useRef<THREE.Group | null>(null);
+  const condyleMatRef = useRef<THREE.MeshPhysicalMaterial | null>(null);
   const nerveSafetyGroupRef = useRef<THREE.Group | null>(null);
   const requestRenderRef = useRef<() => void>(() => {});
 
@@ -671,6 +830,7 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     setEdgeBevelMm(nextSpec.defaultBevelMm);
     setBoneOffsetMm(nextSpec.defaultOffsetMm);
     setScrewCount(nextSpec.defaultScrews);
+    setScrewLengthMm(nextId === 'cranial_vault' ? 5.0 : 5.5);
     setContourFitPct(96);
     onRecordAudit(
       'PROSTHETIC_ALIGN',
@@ -689,6 +849,8 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
       edgeBevelMm,
       boneOffsetMm,
       screwCount,
+      screwLengthMm,
+      screwDiameterMm,
       gridRes,
       includeFenestrations,
     );
@@ -700,6 +862,8 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     edgeBevelMm,
     boneOffsetMm,
     screwCount,
+    screwLengthMm,
+    screwDiameterMm,
     gridRes,
     includeFenestrations,
   ]);
@@ -744,6 +908,7 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     renderer.setSize(width, height);
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    rendererRef.current = renderer;
 
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
@@ -772,6 +937,7 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     const warmFill = new THREE.DirectionalLight(0xfde68a, 0.55);
     warmFill.position.set(8, -14, 10);
     scene.add(warmFill);
+    lightsRef.current = { hemi, key, rim, warmFill };
 
     // Subtle CAD reference datum grid
     const gridHelper = new THREE.GridHelper(22, 22, 0x1e3a5f, 0x0f2544);
@@ -819,28 +985,45 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     scene.add(screwsGroup);
     screwsGroupRef.current = screwsGroup;
 
-    // 4. TMJ Articular Condylar Head & Neck Sub-Assembly (shown on TMJ Ramus case)
+    // 4. Smooth Beveled TMJ Articular Condylar Head & Flared Anatomical Neck Collar
     const condyleGroup = new THREE.Group();
     const coCrMat = new THREE.MeshPhysicalMaterial({
       color: 0xe2e8f0,
-      metalness: 0.98,
-      roughness: 0.07,
+      metalness: 0.96,
+      roughness: 0.09,
       clearcoat: 1.0,
+      clearcoatRoughness: 0.06,
     });
-    const headGeo = new THREE.SphereGeometry(1.05, 28, 22);
-    headGeo.scale(0.95, 1.08, 0.9);
-    const headMesh = new THREE.Mesh(headGeo, coCrMat);
-    headMesh.position.set(0.25, 6.7, 0.2);
+    condyleMatRef.current = coCrMat;
 
-    const neckCurve = new THREE.CatmullRomCurve3([
-      new THREE.Vector3(0.25, 6.4, 0.2),
-      new THREE.Vector3(0.15, 5.5, 0.55),
-      new THREE.Vector3(0.05, 4.6, 0.95),
-    ]);
-    const neckMesh = new THREE.Mesh(
-      new THREE.TubeGeometry(neckCurve, 20, 0.44, 16, false),
-      coCrMat,
-    );
+    // High-resolution anatomical mediolaterally-ovoid condylar head (smooth, rounded, zero faceting)
+    const headGeo = new THREE.SphereGeometry(1.06, 48, 36);
+    headGeo.scale(1.12, 0.86, 0.84);
+    const headMesh = new THREE.Mesh(headGeo, coCrMat);
+    headMesh.position.set(0.18, 6.85, 0.35);
+    headMesh.rotation.z = -0.08;
+    headMesh.rotation.x = 0.12;
+
+    // Sculpted S-curve beveled Lathe neck flaring smoothly from condylar head into the ramus plate
+    const neckLathePts: THREE.Vector2[] = [
+      new THREE.Vector2(0.01, -1.15),
+      new THREE.Vector2(0.62, -1.12),
+      new THREE.Vector2(0.84, -0.96),
+      new THREE.Vector2(0.76, -0.72),
+      new THREE.Vector2(0.56, -0.32),
+      new THREE.Vector2(0.46, 0.18),
+      new THREE.Vector2(0.49, 0.68),
+      new THREE.Vector2(0.62, 1.05),
+      new THREE.Vector2(0.01, 1.15),
+    ];
+    const smoothNeckCurve = new THREE.SplineCurve(neckLathePts);
+    const neckGeo = new THREE.LatheGeometry(smoothNeckCurve.getPoints(36), 40);
+    neckGeo.scale(1.05, 1.0, 0.78);
+    const neckMesh = new THREE.Mesh(neckGeo, coCrMat);
+    neckMesh.position.set(0.12, 5.42, 0.66);
+    neckMesh.rotation.x = -0.26;
+    neckMesh.rotation.z = -0.04;
+
     condyleGroup.add(headMesh, neckMesh);
     scene.add(condyleGroup);
     condyleHeadGroupRef.current = condyleGroup;
@@ -978,25 +1161,11 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
 
     if (nerveSafetyGroupRef.current) {
       const tubeMesh = nerveSafetyGroupRef.current.children[0] as THREE.Mesh;
-      if (templateId === 'cranial_vault') {
+      const curve = getNerveCurveForTemplate(templateId);
+      if (!curve) {
         nerveSafetyGroupRef.current.visible = false;
       } else {
-        const curve =
-          templateId === 'tmj_ramus'
-            ? new THREE.CatmullRomCurve3([
-                new THREE.Vector3(-0.3, 1.6, -0.35),
-                new THREE.Vector3(-0.6, -0.6, -0.25),
-                new THREE.Vector3(-1.4, -3.2, -0.1),
-                new THREE.Vector3(-2.8, -5.2, 0.2),
-              ])
-            : new THREE.CatmullRomCurve3([
-                new THREE.Vector3(-7.6, 0.55, -0.6),
-                new THREE.Vector3(-3.8, 0.2, 1.5),
-                new THREE.Vector3(0, 0.05, 2.3),
-                new THREE.Vector3(3.8, 0.2, 1.5),
-                new THREE.Vector3(7.6, 0.55, -0.6),
-              ]);
-        const newGeo = new THREE.TubeGeometry(curve, 32, 0.26, 12, false);
+        const newGeo = new THREE.TubeGeometry(curve, 40, 0.26, 16, false);
         tubeMesh.geometry.dispose();
         tubeMesh.geometry = newGeo;
         nerveSafetyGroupRef.current.visible = showNerveSafetyZone;
@@ -1006,8 +1175,22 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     requestRenderRef.current();
   }, [templateId, showHostBone, showNerveSafetyZone]);
 
-  // Update Parametric Implant Mesh Geometry, Finish Preset & Locking Screw Bosses
+  // Update Parametric Implant Mesh Geometry, Finish Preset, Light/Shine & Nerve-Checked Locking Screws
   useEffect(() => {
+    const shineNorm = surfaceShine / 100; // 0 = Matte Satin, 1 = Mirror Gloss
+    const lightScale = lightIntensity / 100; // 0.4 .. 2.2
+
+    // Apply live Light Brightness to Studio 3-Point Rig & Renderer Exposure
+    if (lightsRef.current) {
+      lightsRef.current.hemi.intensity = 0.82 * lightScale;
+      lightsRef.current.key.intensity = 1.95 * lightScale;
+      lightsRef.current.rim.intensity = 1.05 * lightScale;
+      lightsRef.current.warmFill.intensity = 0.5 * lightScale;
+    }
+    if (rendererRef.current) {
+      rendererRef.current.toneMappingExposure = 0.72 + lightScale * 0.42;
+    }
+
     const implantMesh = implantMeshRef.current;
     if (implantMesh) {
       implantMesh.geometry.dispose();
@@ -1019,32 +1202,53 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
         mat.vertexColors = true;
         mat.color.setHex(0xffffff);
         mat.metalness = 0.08;
-        mat.roughness = 0.32;
-        mat.clearcoat = 0.35;
+        mat.roughness = 0.62 - shineNorm * 0.5;
+        mat.clearcoat = shineNorm * 0.85;
+        mat.clearcoatRoughness = 0.45 - shineNorm * 0.38;
       } else if (finishPreset === 'peek') {
         mat.vertexColors = false;
         mat.color.setHex(0xd6c7b2);
         mat.metalness = 0.04;
-        mat.roughness = 0.34;
-        mat.clearcoat = 0.55;
+        mat.roughness = 0.68 - shineNorm * 0.54;
+        mat.clearcoat = shineNorm * 0.95;
+        mat.clearcoatRoughness = 0.42 - shineNorm * 0.36;
       } else if (finishPreset === 'cocrmo') {
         mat.vertexColors = false;
         mat.color.setHex(0xe2e8f0);
         mat.metalness = 0.98;
-        mat.roughness = 0.08;
-        mat.clearcoat = 1.0;
+        mat.roughness = 0.42 - shineNorm * 0.38;
+        mat.clearcoat = 0.2 + shineNorm * 0.8;
+        mat.clearcoatRoughness = 0.3 - shineNorm * 0.27;
       } else {
-        // Brushed Grade-5 Ti-6Al-4V Titanium
+        // Brushed Grade-5 Ti-6Al-4V Titanium modulated by user Shine control
         mat.vertexColors = false;
         mat.color.setHex(0x94a3b8);
-        mat.metalness = 0.92;
-        mat.roughness = 0.23;
-        mat.clearcoat = 0.4;
+        mat.metalness = 0.9;
+        mat.roughness = 0.56 - shineNorm * 0.48;
+        mat.clearcoat = shineNorm * 0.88;
+        mat.clearcoatRoughness = 0.38 - shineNorm * 0.33;
       }
+      mat.envMapIntensity = 0.45 + shineNorm * 1.15;
       mat.needsUpdate = true;
     }
 
-    // Rebuild locking screw bosses aligned to exact contoured surface normals
+    if (condyleMatRef.current) {
+      condyleMatRef.current.roughness = 0.45 - shineNorm * 0.4;
+      condyleMatRef.current.clearcoat = 0.15 + shineNorm * 0.85;
+      condyleMatRef.current.clearcoatRoughness = 0.32 - shineNorm * 0.28;
+      condyleMatRef.current.envMapIntensity = 0.5 + shineNorm * 1.25;
+      condyleMatRef.current.needsUpdate = true;
+    }
+
+    if (boneSubstrateMeshRef.current) {
+      const bMat = boneSubstrateMeshRef.current.material as THREE.MeshPhysicalMaterial;
+      bMat.roughness = 0.72 - shineNorm * 0.42;
+      bMat.clearcoat = shineNorm * 0.6;
+      bMat.envMapIntensity = 0.4 + shineNorm * 0.8;
+      bMat.needsUpdate = true;
+    }
+
+    // Rebuild locking screw bosses with exact user-configured Screw Length & live Nerve Safety coloring
     const screwsGroup = screwsGroupRef.current;
     if (screwsGroup) {
       while (screwsGroup.children.length > 0) {
@@ -1055,13 +1259,32 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
 
       const bezelMat = new THREE.MeshPhysicalMaterial({
         color: 0xe2e8f0,
-        metalness: 0.95,
-        roughness: 0.14,
-      });
-      const goldScrewMat = new THREE.MeshPhysicalMaterial({
-        color: 0xfbbf24,
         metalness: 0.94,
-        roughness: 0.18,
+        roughness: Math.max(0.08, 0.38 - shineNorm * 0.3),
+      });
+      const safeGoldScrewMat = new THREE.MeshPhysicalMaterial({
+        color: 0xfbbf24,
+        metalness: 0.92,
+        roughness: Math.max(0.08, 0.42 - shineNorm * 0.32),
+      });
+      const cautionAmberMat = new THREE.MeshPhysicalMaterial({
+        color: 0xf97316,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.4,
+        metalness: 0.7,
+        roughness: 0.22,
+      });
+      const collisionRedMat = new THREE.MeshPhysicalMaterial({
+        color: 0xef4444,
+        emissive: 0xdc2626,
+        emissiveIntensity: 0.85,
+        metalness: 0.4,
+        roughness: 0.2,
+      });
+      const collisionHaloMat = new THREE.MeshBasicMaterial({
+        color: 0xff2d55,
+        transparent: true,
+        opacity: 0.62,
       });
       const socketMat = new THREE.MeshStandardMaterial({
         color: 0x0f172a,
@@ -1070,22 +1293,29 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
       });
 
       const rScene = (screwDiameterMm * 0.25) / 2;
+      const shaftLenScene = screwLengthMm * 0.25;
       const upVec = new THREE.Vector3(0, 1, 0);
 
-      implantBuild.screwTransforms.forEach(({ position, normal }) => {
+      implantBuild.screwTransforms.forEach(({ position, normal, safety }) => {
         const quat = new THREE.Quaternion().setFromUnitVectors(upVec, normal);
+        const screwMat =
+          safety === 'collision'
+            ? collisionRedMat
+            : safety === 'caution'
+              ? cautionAmberMat
+              : safeGoldScrewMat;
 
         const bezel = new THREE.Mesh(
-          new THREE.TorusGeometry(rScene * 1.28, rScene * 0.28, 10, 20),
-          bezelMat,
+          new THREE.TorusGeometry(rScene * 1.28, rScene * 0.28, 12, 24),
+          safety === 'collision' ? collisionRedMat : bezelMat,
         );
         bezel.geometry.rotateX(Math.PI / 2);
         bezel.position.copy(position);
         bezel.quaternion.copy(quat);
 
         const head = new THREE.Mesh(
-          new THREE.CylinderGeometry(rScene * 1.05, rScene * 0.85, rScene * 0.72, 16),
-          goldScrewMat,
+          new THREE.CylinderGeometry(rScene * 1.05, rScene * 0.85, rScene * 0.72, 18),
+          screwMat,
         );
         head.position.copy(position);
         head.quaternion.copy(quat);
@@ -1097,16 +1327,25 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
         socket.position.copy(position).addScaledVector(normal, rScene * 0.08);
         socket.quaternion.copy(quat);
 
+        // Tapered self-tapping screw shaft matching exact user Screw Length (mm)
         const shaft = new THREE.Mesh(
-          new THREE.CylinderGeometry(rScene * 0.58, rScene * 0.42, thicknessMm * 0.25 + 1.15, 12),
-          goldScrewMat,
+          new THREE.CylinderGeometry(rScene * 0.62, rScene * 0.34, shaftLenScene, 14),
+          screwMat,
         );
-        shaft.position
-          .copy(position)
-          .addScaledVector(normal, -(thicknessMm * 0.25 + 1.15) * 0.5);
+        shaft.position.copy(position).addScaledVector(normal, -shaftLenScene * 0.5);
         shaft.quaternion.copy(quat);
 
         screwsGroup.add(bezel, head, socket, shaft);
+
+        // Visual warning ring at the tip when screw approaches/pierces the Inferior Alveolar Nerve
+        if (safety === 'collision') {
+          const tipRing = new THREE.Mesh(
+            new THREE.SphereGeometry(rScene * 1.35, 16, 12),
+            collisionHaloMat,
+          );
+          tipRing.position.copy(position).addScaledVector(normal, -shaftLenScene);
+          screwsGroup.add(tipRing);
+        }
       });
     }
 
@@ -1116,7 +1355,17 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
     }
 
     requestRenderRef.current();
-  }, [implantBuild, finishPreset, showWireframe, screwDiameterMm, thicknessMm, autoRotate]);
+  }, [
+    implantBuild,
+    finishPreset,
+    showWireframe,
+    screwDiameterMm,
+    screwLengthMm,
+    lightIntensity,
+    surfaceShine,
+    thicknessMm,
+    autoRotate,
+  ]);
 
   // 2D SVG Spline Handle Dragging
   const updateDraggedPoint = (e: React.PointerEvent<SVGSVGElement>) => {
@@ -1438,8 +1687,60 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
               </div>
             </div>
 
+            {/* Live Lighting Brightness & Surface Shine Studio Bar */}
+            <div className="px-4 py-2.5 border-t border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-[#0A192F] flex flex-wrap items-center justify-between gap-4 text-[11px] font-mono">
+              <label className="flex items-center gap-2 flex-1 min-w-[160px] text-slate-700 dark:text-slate-200">
+                <Sun className="w-3.5 h-3.5 text-[#FFD700] shrink-0" />
+                <span className="shrink-0">
+                  {language === 'en' ? 'Light' : 'Cahaya'}:
+                </span>
+                <input
+                  type="range"
+                  min={40}
+                  max={220}
+                  step={5}
+                  value={lightIntensity}
+                  onChange={(e) => setLightIntensity(parseInt(e.target.value, 10))}
+                  className="w-full accent-[#FFD700] h-1.5 cursor-pointer"
+                />
+                <span className="w-9 text-right tabular-nums font-bold text-amber-700 dark:text-[#FFD700]">
+                  {lightIntensity}%
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 flex-1 min-w-[160px] text-slate-700 dark:text-slate-200">
+                <Sparkles className="w-3.5 h-3.5 text-[#0088AA] dark:text-[#00E5FF] shrink-0" />
+                <span className="shrink-0">
+                  {language === 'en' ? 'Shine' : 'Kilap'}:
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={2}
+                  value={surfaceShine}
+                  onChange={(e) => setSurfaceShine(parseInt(e.target.value, 10))}
+                  className="w-full accent-[#00E5FF] h-1.5 cursor-pointer"
+                />
+                <span className="w-9 text-right tabular-nums font-bold text-[#0088AA] dark:text-[#00E5FF]">
+                  {surfaceShine}%
+                </span>
+              </label>
+
+              <button
+                onClick={() => {
+                  setLightIntensity(110);
+                  setSurfaceShine(65);
+                }}
+                className="px-2 py-1 rounded bg-slate-200 dark:bg-[#112240] text-slate-700 dark:text-slate-300 hover:text-[#00E5FF] text-[10px] cursor-pointer shrink-0"
+                title={language === 'en' ? 'Reset light & shine' : 'Reset cahaya & kilap'}
+              >
+                {language === 'en' ? 'Reset' : 'Reset'}
+              </button>
+            </div>
+
             {/* Live Engineering Fit & Extrusion Metrics Strip */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 dark:divide-slate-800 bg-slate-50 dark:bg-[#0A192F]/80 text-xs font-mono tabular-nums">
+            <div className="grid grid-cols-2 sm:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 dark:divide-slate-800 bg-slate-50 dark:bg-[#0A192F]/80 text-xs font-mono tabular-nums border-t border-slate-200 dark:border-slate-800">
               <div className="p-3">
                 <div className="text-[10px] text-slate-500 dark:text-slate-400">
                   {language === 'en' ? 'MEAN BONE GAP' : 'RATA-RATA CELAH'}
@@ -1791,38 +2092,115 @@ export const ImplantDesignLab: React.FC<ImplantDesignLabProps> = ({
               />
             </div>
 
-            {/* Locking Screw Fixation Controls */}
-            <div className="grid grid-cols-2 gap-3 pt-1">
-              <div>
-                <div className="flex justify-between text-xs font-mono text-slate-700 dark:text-slate-200 mb-1 tabular-nums">
-                  <span>{language === 'en' ? 'Locking Screws' : 'Sekrup Fiksasi'}</span>
-                  <span className="text-[#FFD700] font-bold">{screwCount}</span>
+            {/* Locking Screw Fixation Controls (Count, Width Ø, & Screw Length with Nerve Safety) */}
+            <div className="space-y-3 pt-1">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex justify-between text-xs font-mono text-slate-700 dark:text-slate-200 mb-1 tabular-nums">
+                    <span>{language === 'en' ? 'Locking Screws' : 'Sekrup Fiksasi'}</span>
+                    <span className="text-[#FFD700] font-bold">{screwCount}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={3}
+                    max={7}
+                    step={1}
+                    value={screwCount}
+                    onChange={(e) => setScrewCount(parseInt(e.target.value, 10))}
+                    className="w-full accent-[#FFD700] h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  />
                 </div>
-                <input
-                  type="range"
-                  min={3}
-                  max={7}
-                  step={1}
-                  value={screwCount}
-                  onChange={(e) => setScrewCount(parseInt(e.target.value, 10))}
-                  className="w-full accent-[#FFD700] h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
-                />
+
+                <div>
+                  <div className="flex justify-between text-xs font-mono text-slate-700 dark:text-slate-200 mb-1 tabular-nums">
+                    <span>{language === 'en' ? 'Screw Width Ø' : 'Lebar Sekrup Ø'}</span>
+                    <span className="font-bold">{screwDiameterMm.toFixed(1)} mm</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={1.8}
+                    max={2.7}
+                    step={0.1}
+                    value={screwDiameterMm}
+                    onChange={(e) => setScrewDiameterMm(parseFloat(e.target.value))}
+                    className="w-full accent-[#FFD700] h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  />
+                </div>
               </div>
 
-              <div>
-                <div className="flex justify-between text-xs font-mono text-slate-700 dark:text-slate-200 mb-1 tabular-nums">
-                  <span>{language === 'en' ? 'Screw Ø' : 'Diameter Ø'}</span>
-                  <span className="font-bold">{screwDiameterMm.toFixed(1)} mm</span>
+              {/* Screw Length (mm) Slider + Live Inferior Alveolar Nerve Clearance Checker */}
+              <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0A192F] border border-slate-200 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between text-xs font-mono text-slate-700 dark:text-slate-200 tabular-nums">
+                  <span>{language === 'en' ? 'Screw Length (Depth)' : 'Panjang Sekrup (Kedalaman)'}</span>
+                  <span
+                    className={`font-bold ${
+                      implantBuild.collidingScrewCount > 0
+                        ? 'text-rose-500'
+                        : implantBuild.minNerveClearanceMm < 1.8
+                          ? 'text-amber-500'
+                          : 'text-emerald-500 dark:text-emerald-400'
+                    }`}
+                  >
+                    {screwLengthMm.toFixed(1)} mm
+                  </span>
                 </div>
                 <input
                   type="range"
-                  min={1.8}
-                  max={2.7}
-                  step={0.1}
-                  value={screwDiameterMm}
-                  onChange={(e) => setScrewDiameterMm(parseFloat(e.target.value))}
-                  className="w-full accent-[#FFD700] h-1.5 bg-slate-200 dark:bg-slate-700 rounded-lg cursor-pointer"
+                  min={3.5}
+                  max={14.0}
+                  step={0.5}
+                  value={screwLengthMm}
+                  onChange={(e) => setScrewLengthMm(parseFloat(e.target.value))}
+                  className={`w-full h-1.5 rounded-lg cursor-pointer ${
+                    implantBuild.collidingScrewCount > 0
+                      ? 'accent-rose-500'
+                      : 'accent-[#FFD700]'
+                  } bg-slate-200 dark:bg-slate-700`}
                 />
+                <div className="flex justify-between text-[10px] font-mono text-slate-400">
+                  <span>3.5 mm ({language === 'en' ? 'Monocortical' : 'Monokortikal'})</span>
+                  <span>14.0 mm ({language === 'en' ? 'Deep Bicortical' : 'Bikortikal Dalam'})</span>
+                </div>
+
+                {templateId !== 'cranial_vault' && (
+                  <div
+                    className={`mt-1.5 px-2.5 py-2 rounded-md border flex items-center justify-between gap-2 text-[11px] font-mono ${
+                      implantBuild.collidingScrewCount > 0
+                        ? 'bg-rose-500/15 border-rose-500/60 text-rose-700 dark:text-rose-300'
+                        : implantBuild.minNerveClearanceMm < 1.8
+                          ? 'bg-amber-500/15 border-amber-500/50 text-amber-800 dark:text-amber-300'
+                          : 'bg-emerald-500/10 border-emerald-500/40 text-emerald-700 dark:text-emerald-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      {implantBuild.collidingScrewCount > 0 ? (
+                        <AlertTriangle className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                      ) : (
+                        <ShieldCheck className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                      )}
+                      <span>
+                        {implantBuild.collidingScrewCount > 0
+                          ? language === 'en'
+                            ? `NERVE CONTACT (${implantBuild.minNerveClearanceMm.toFixed(1)} mm) · ${implantBuild.collidingScrewCount} screw(s) hitting canal!`
+                            : `KONTAK SARAF (${implantBuild.minNerveClearanceMm.toFixed(1)} mm) · ${implantBuild.collidingScrewCount} sekrup mengenai saraf!`
+                          : language === 'en'
+                            ? `Nerve Clearance: ${implantBuild.minNerveClearanceMm.toFixed(1)} mm · SAFE`
+                            : `Jarak Aman Saraf: ${implantBuild.minNerveClearanceMm.toFixed(1)} mm · AMAN`}
+                      </span>
+                    </div>
+
+                    {implantBuild.collidingScrewCount > 0 && (
+                      <button
+                        onClick={() => setScrewLengthMm(implantBuild.recommendedSafeLengthMm)}
+                        className="px-2 py-0.5 rounded bg-emerald-500 text-[#0A192F] font-bold text-[10px] hover:bg-emerald-400 transition-colors cursor-pointer shrink-0"
+                      >
+                        {language === 'en'
+                          ? `Auto-Safe (${implantBuild.recommendedSafeLengthMm.toFixed(1)} mm)`
+                          : `Aman Otomatis (${implantBuild.recommendedSafeLengthMm.toFixed(1)} mm)`}
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 

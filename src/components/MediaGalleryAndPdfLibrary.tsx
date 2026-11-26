@@ -18,6 +18,8 @@ import {
   signInWithGoogle,
 } from '../firebase';
 import { Language } from '../i18n/translations';
+import { BUILTIN_VIDEO_LIBRARY } from '../data/videoLibrary';
+import { VideoLibraryPanel } from './VideoLibraryPanel';
 
 export interface GalleryImageItem {
   id: string;
@@ -884,6 +886,14 @@ export const MediaGalleryAndPdfLibrary: React.FC<MediaGalleryAndPdfLibraryProps>
           </button>
         </form>
       </div>
+
+      {/* SECTION 0: Karina 3D Lab Embedded Video Library (All 6 Drive Videos + Inline Theater) */}
+      <VideoLibraryPanel
+        language={language}
+        videos={BUILTIN_VIDEO_LIBRARY}
+        showInlineTheater
+        compactHeader
+      />
 
       {/* SECTION 1: Clinical CT & 3D Reference Image Gallery */}
       <div className="bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">

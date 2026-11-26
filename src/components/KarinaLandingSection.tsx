@@ -5,7 +5,6 @@ import {
   Cpu,
   ShieldCheck,
   ArrowRight,
-  RefreshCw,
   Wrench,
   BookOpen,
   CheckCircle2,
@@ -16,82 +15,14 @@ import {
 } from 'lucide-react';
 import { Language, UI_TEXT } from '../i18n/translations';
 import { getGoogleDriveAccessToken, signInWithGoogle } from '../firebase';
+import {
+  BUILTIN_VIDEO_LIBRARY,
+  LANDING_DRIVE_FOLDER_ID,
+  LibraryVideoItem,
+} from '../data/videoLibrary';
+import { VideoLibraryPanel } from './VideoLibraryPanel';
 
-export const LANDING_DRIVE_FOLDER_ID = '1x477U38x7QqfqE7cB9CW8WQPYxejd0f2';
-
-interface EmbeddedPromoVideo {
-  id: string;
-  driveFileId: string;
-  src: string;
-  poster: string;
-  durationLabel?: string;
-  titleEn: string;
-  titleId: string;
-  subtitleEn: string;
-  subtitleId: string;
-  badgeEn: string;
-  badgeId: string;
-}
-
-const BUILTIN_PROMO_VIDEOS: EmbeddedPromoVideo[] = [
-  {
-    id: 'promo_4',
-    driveFileId: '1uTXw4zfNjcEdfVKtqM_y6MO06k206tQA',
-    src: '/assets/promo/karina_promo_4.mp4',
-    poster: '/assets/promo/karina_promo_4_poster.jpg',
-    durationLabel: '5:58 · NARRATED',
-    titleEn: 'Feature — The Blueprint to Biomechanics (K3D & FGM TMJ Implants)',
-    titleId: 'Utama — The Blueprint to Biomechanics (K3D & Implan TMJ FGM)',
-    subtitleEn:
-      'Full narrated deep-dive covering TMJ condylar translation, K3D bilingual CT segmentation & nerve safety, and Functionally Graded Material (FGM 90–0) implants delivering 9.2× lower peak interface stress and +88% mobility.',
-    subtitleId:
-      'Presentasi bernarasi lengkap mengenai translasi kondilus TMJ, segmentasi CT bilingual K3D & keamanan saraf, serta implan Functionally Graded Material (FGM 90–0) dengan penurunan tegangan antarmuka 9,2× dan mobilitas +88%.',
-    badgeEn: 'NEW FEATURE FILM · 5:58',
-    badgeId: 'VIDEO UTAMA BARU · 5:58',
-  },
-  {
-    id: 'promo_3',
-    driveFileId: '1JUylv9SkEq3t7JXv6N0881YteHUT5EgE',
-    src: '/assets/promo/karina_promo_3.mp4',
-    poster: '/src/assets/images/hero_karina_craniotmj_promo_1795440953726.jpg',
-    titleEn: 'Promo 02 — Full Skull Bite Alignment & Virtual Tooth Replacement',
-    titleId: 'Promo 02 — Penyelarasan Gigitan Tengkorak & Penggantian Gigi Virtual',
-    subtitleEn:
-      'DICOM import, translucent cranial bone revealing tooth roots and mandibular nerve, anatomical odontogram, and placing a realistic virtual replacement tooth over scatter.',
-    subtitleId:
-      'Impor DICOM, tulang transparan menampilkan akar gigi dan saraf mandibula, odontogram anatomis, serta penempatan gigi pengganti virtual pada area hamburan.',
-    badgeEn: 'PROMO REEL 02',
-    badgeId: 'VIDEO PROMO 02',
-  },
-  {
-    id: 'promo_1',
-    driveFileId: '1mVtwtrshdH1uMPSOSwph4CuqKpcrZuaW',
-    src: '/assets/promo/karina_promo_1.mp4',
-    poster: '/src/assets/images/diagram_tmj_condyle_anatomy_1795440952547.jpg',
-    titleEn: 'Promo 03 — Dental Scatter Cleanup, Nerve Canal & TMJ Prosthesis',
-    titleId: 'Promo 03 — Pembersihan Hamburan Gigi, Kanalis Saraf & Prostesis TMJ',
-    subtitleEn:
-      'Isolating cortical bone, trimming metallic dental filling scatter streaks, inspecting the golden mandibular nerve, and fitting a Ti-6Al-4V TMJ ramus plate.',
-    subtitleId:
-      'Isolasi tulang kortikal, pemangkasan hamburan tambalan logam, inspeksi saraf mandibula, dan pemasangan pelat ramus TMJ titanium.',
-    badgeEn: 'PROMO REEL 03',
-    badgeId: 'VIDEO PROMO 03',
-  },
-  {
-    id: 'promo_2',
-    driveFileId: '1PuIWFN_NLULssFufHe_26GGd99QuU575',
-    src: '/assets/promo/karina_promo_2.mp4',
-    poster: '/src/assets/images/diagram_3d_printing_laser_scan_1795440953581.jpg',
-    titleEn: 'Promo 04 — DICOM Series Importer & Isolated Mandible Odontogram',
-    titleId: 'Promo 04 — Impor Seri DICOM & Odontogram Mandibula Terisolasi',
-    subtitleEn:
-      'Loading multi-slice DICOM CT series into a smooth isolated mandibular 3D render with interactive odontogram selection and nerve pathway controls.',
-    subtitleId:
-      'Memuat seri CT DICOM multi-irisan menjadi render 3D mandibula halus dengan pemilihan odontogram interaktif dan kontrol jalur saraf.',
-    badgeEn: 'PROMO REEL 04',
-    badgeId: 'VIDEO PROMO 04',
-  },
-];
+export { LANDING_DRIVE_FOLDER_ID };
 
 interface KarinaLandingSectionProps {
   language: Language;
@@ -115,8 +46,8 @@ export const KarinaLandingSection: React.FC<KarinaLandingSectionProps> = ({
   onNotify,
 }) => {
   const t = UI_TEXT[language];
-  const [promoVideos, setPromoVideos] = useState<EmbeddedPromoVideo[]>(BUILTIN_PROMO_VIDEOS);
-  const [activePromoId, setActivePromoId] = useState<string>(BUILTIN_PROMO_VIDEOS[0].id);
+  const [promoVideos, setPromoVideos] = useState<LibraryVideoItem[]>(BUILTIN_VIDEO_LIBRARY);
+  const [activePromoId, setActivePromoId] = useState<string>(BUILTIN_VIDEO_LIBRARY[0].id);
   const [heroMuted, setHeroMuted] = useState(true);
   const [syncingDrive, setSyncingDrive] = useState(false);
 
@@ -166,7 +97,7 @@ export const KarinaLandingSection: React.FC<KarinaLandingSectionProps> = ({
       };
 
       const existingIds = new Set(promoVideos.map((v) => v.driveFileId));
-      const newVideos: EmbeddedPromoVideo[] = [];
+      const newVideos: LibraryVideoItem[] = [];
 
       for (const f of data.files || []) {
         if (existingIds.has(f.id)) continue;
@@ -183,29 +114,34 @@ export const KarinaLandingSection: React.FC<KarinaLandingSectionProps> = ({
           driveFileId: f.id,
           src: objectUrl,
           poster: '/src/assets/images/hero_karina_craniotmj_promo_1795440953726.jpg',
-          titleEn: `Promo ${indexLabel} — ${f.name.replace(/\.[^.]+$/, '')}`,
-          titleId: `Promo ${indexLabel} — ${f.name.replace(/\.[^.]+$/, '')}`,
+          category: 'biomechanics',
+          durationLabel: 'DRIVE VIDEO',
+          isNew: true,
+          titleEn: `${f.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ')}`,
+          titleId: `${f.name.replace(/\.[^.]+$/, '').replace(/_/g, ' ')}`,
           subtitleEn:
-            f.description || 'Embedded promotional video loaded from Karina 3D Lab Drive folder.',
+            f.description || 'Embedded training video loaded from Karina 3D Lab Drive folder.',
           subtitleId:
-            f.description || 'Video promosi tertanam yang dimuat dari folder Drive Karina 3D Lab.',
-          badgeEn: `PROMO REEL ${indexLabel}`,
-          badgeId: `VIDEO PROMO ${indexLabel}`,
+            f.description || 'Video pelatihan tertanam yang dimuat dari folder Drive Karina 3D Lab.',
+          badgeEn: `DRIVE VIDEO ${indexLabel}`,
+          badgeId: `VIDEO DRIVE ${indexLabel}`,
+          tags: ['Google Drive', 'Training'],
         });
       }
 
       if (newVideos.length > 0) {
-        setPromoVideos((prev) => [...prev, ...newVideos]);
+        setPromoVideos((prev) => [...newVideos, ...prev]);
+        setActivePromoId(newVideos[0].id);
         onNotify?.(
           language === 'en'
-            ? `Embedded ${newVideos.length} additional promo video(s) from Google Drive.`
-            : `Menanamkan ${newVideos.length} video promo tambahan dari Google Drive.`,
+            ? `Embedded ${newVideos.length} additional video(s) into the Video Library.`
+            : `Menambahkan ${newVideos.length} video baru ke Pustaka Video.`,
         );
       } else {
         onNotify?.(
           language === 'en'
-            ? 'All promo videos from your Google Drive folder are already embedded.'
-            : 'Semua video promo dari folder Google Drive Anda sudah tertanam.',
+            ? 'All 6 videos from your Google Drive folder are already embedded in the Video Library.'
+            : 'Semua 6 video dari folder Google Drive Anda sudah tertanam di Pustaka Video.',
         );
       }
     } catch (err: unknown) {
@@ -266,29 +202,35 @@ export const KarinaLandingSection: React.FC<KarinaLandingSectionProps> = ({
 
           {/* Inline Promo Reel Switcher Bar (Switch Embedded Videos Right Inside Hero) */}
           <div className="px-4 py-2.5 bg-slate-100 dark:bg-[#0A192F] border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-1.5">
               {promoVideos.map((vid, idx) => {
                 const isSelected = vid.id === activePromo.id;
+                const shortLabel =
+                  vid.id === 'promo_5'
+                    ? language === 'en'
+                      ? '01 · Bionic TMJ'
+                      : '01 · TMJ Bionik'
+                    : vid.id === 'promo_6'
+                      ? language === 'en'
+                        ? '02 · 3D Bioprinting'
+                        : '02 · Bioprinting 3D'
+                      : vid.id === 'promo_4'
+                        ? language === 'en'
+                          ? '03 · Biomechanics'
+                          : '03 · Biomekanika'
+                        : `0${idx + 1} · Reel`;
                 return (
                   <button
                     key={vid.id}
                     onClick={() => setActivePromoId(vid.id)}
-                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold transition-colors cursor-pointer ${
                       isSelected
                         ? 'bg-[#00E5FF] text-[#0A192F]'
                         : 'bg-white dark:bg-[#112240] text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-[#00E5FF]'
                     }`}
                   >
-                    <Play className="w-3 h-3" />
-                    <span>
-                      {idx === 0
-                        ? language === 'en'
-                          ? 'Feature: Blueprint to Biomechanics'
-                          : 'Utama: Blueprint ke Biomekanika'
-                        : language === 'en'
-                          ? `Promo 0${idx + 1}`
-                          : `Promo 0${idx + 1}`}
-                    </span>
+                    <Play className="w-2.5 h-2.5" />
+                    <span>{shortLabel}</span>
                   </button>
                 );
               })}
@@ -456,46 +398,10 @@ export const KarinaLandingSection: React.FC<KarinaLandingSectionProps> = ({
         </div>
       </div>
 
-      {/* 2. EMBEDDED PROMO VIDEO SHOWCASE (Plays 100% Inline Inside the Landing Page) */}
-      <div className="bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-6 space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 dark:border-slate-800 pb-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2 text-xs font-mono font-semibold text-[#0088AA] dark:text-[#00E5FF]">
-              <Film className="w-4 h-4" />
-              <span>KARINA 3D LAB // EMBEDDED PROMO VIDEOS</span>
-            </div>
-            <h2 className="text-xl font-bold text-slate-900 dark:text-white">
-              {language === 'en'
-                ? 'Watch Karina 3D Lab in Action'
-                : 'Lihat Karina 3D Lab Beraksi'}
-            </h2>
-            <p className="text-xs text-slate-600 dark:text-slate-300">
-              {language === 'en'
-                ? 'All four videos from your Google Drive folder — including the new 6-minute narrated Blueprint to Biomechanics feature — are embedded natively right here on the landing page.'
-                : 'Keempat video dari folder Google Drive Anda — termasuk video utama bernarasi 6 menit Blueprint to Biomechanics — tertanam langsung di halaman beranda ini.'}
-            </p>
-          </div>
-
-          <button
-            onClick={handleSyncAdditionalDrivePromos}
-            disabled={syncingDrive}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-slate-100 dark:bg-[#0A192F] border border-slate-300 dark:border-slate-700 hover:border-[#00E5FF] text-xs font-semibold text-slate-800 dark:text-slate-200 transition-colors cursor-pointer disabled:opacity-60"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-[#0088AA] dark:text-[#00E5FF] ${syncingDrive ? 'animate-spin' : ''}`} />
-            <span>
-              {syncingDrive
-                ? language === 'en'
-                  ? 'Checking Drive...'
-                  : 'Memeriksa Drive...'
-                : language === 'en'
-                  ? 'Check Drive for New Promos'
-                  : 'Cek Promo Baru di Drive'}
-            </span>
-          </button>
-        </div>
-
-        {/* Biomechanical Research Highlights Featured in "The Blueprint to Biomechanics" */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-50 dark:bg-[#0A192F] border border-slate-200 dark:border-slate-800 rounded-xl p-4">
+      {/* 2. EMBEDDED VIDEO LIBRARY + BIOMECHANICS BENCHMARKS */}
+      <div className="space-y-4">
+        {/* Biomechanical Research Highlights Featured in Our TMJ Documentary Series */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-4">
           <div className="space-y-0.5">
             <div className="text-[10px] font-mono font-semibold text-[#0088AA] dark:text-[#00E5FF]">
               {language === 'en' ? 'PEAK INTERFACE STRESS' : 'TEGANGAN ANTARMUKA PUNCAK'}
@@ -537,62 +443,30 @@ export const KarinaLandingSection: React.FC<KarinaLandingSectionProps> = ({
           </div>
           <div className="space-y-0.5">
             <div className="text-[10px] font-mono font-semibold text-fuchsia-600 dark:text-fuchsia-400">
-              {language === 'en' ? 'FGM [90–0] GRADIENT' : 'GRADIEN FGM [90–0]'}
+              {language === 'en' ? 'TPMS GYROID & FGM' : 'TPMS GYROID & FGM'}
             </div>
             <div className="text-lg font-bold text-slate-900 dark:text-white">
               {language === 'en' ? 'Lattice → Cartilage' : 'Kisi → Tulang Rawan'}
             </div>
             <div className="text-[11px] text-slate-600 dark:text-slate-400">
               {language === 'en'
-                ? 'Smooth porous titanium-to-polymer biomechanics'
-                : 'Transisi halus titanium berpori ke polimer elastis'}
+                ? 'Porous titanium-to-voxelized cartilage bioprinting'
+                : 'Bioprinting titanium berpori ke tulang rawan voxel'}
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {promoVideos.map((vid) => (
-            <div
-              key={vid.id}
-              className={`bg-slate-50 dark:bg-[#0A192F] border rounded-xl overflow-hidden flex flex-col ${
-                vid.id === 'promo_4'
-                  ? 'border-[#00E5FF]/60 ring-1 ring-[#00E5FF]/20'
-                  : 'border-slate-200 dark:border-slate-800'
-              }`}
-            >
-              <div className="aspect-video bg-black relative">
-                <video
-                  src={vid.src}
-                  poster={vid.poster}
-                  controls
-                  playsInline
-                  preload="metadata"
-                  className="w-full h-full object-contain bg-black"
-                />
-              </div>
-              <div className="p-4 space-y-1.5 flex-1 flex flex-col justify-between">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-[10px] font-mono font-bold text-[#FFD700]">
-                      {language === 'en' ? vid.badgeEn : vid.badgeId}
-                    </span>
-                    {vid.durationLabel && (
-                      <span className="text-[10px] font-mono font-semibold text-[#0088AA] dark:text-[#00E5FF]">
-                        {vid.durationLabel}
-                      </span>
-                    )}
-                  </div>
-                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                    {language === 'en' ? vid.titleEn : vid.titleId}
-                  </h3>
-                  <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                    {language === 'en' ? vid.subtitleEn : vid.subtitleId}
-                  </p>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <VideoLibraryPanel
+          language={language}
+          videos={promoVideos}
+          activeVideoId={activePromoId}
+          onSelectVideo={(vid) => {
+            setActivePromoId(vid.id);
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }}
+          onSyncDrive={handleSyncAdditionalDrivePromos}
+          syncingDrive={syncingDrive}
+        />
       </div>
 
       {/* 3. COMPLETE APP DESCRIPTION & ARCHITECTURE OVERVIEW */}

@@ -7,6 +7,8 @@ import {
   ChevronUp,
   RotateCcw,
   Box,
+  Sun,
+  Sparkles,
 } from 'lucide-react';
 import { GeneratedMeshData } from '../services/volumeGenerator';
 import { Language } from '../i18n/translations';
@@ -170,6 +172,9 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
+  const [lightLevel, setLightLevel] = useState(110); // 40..220%
+  const [surfaceShine, setSurfaceShine] = useState(55); // 0..100%
+  const [implantScrewLenMm, setImplantScrewLenMm] = useState(5.5); // 3.5..12.0 mm
   const [shaderPreset, setShaderPreset] = useState<VolumeShaderPreset>(
     colorByLayers ? 'cyan_mask' : 'clinical_bone',
   );
@@ -183,8 +188,22 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   }, [colorByLayers]);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
+  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const controlsRef = useRef<OrbitControls | null>(null);
+  const lightsRef = useRef<{
+    hemi: THREE.HemisphereLight;
+    key: THREE.DirectionalLight;
+    fill: THREE.DirectionalLight;
+    rim: THREE.DirectionalLight;
+  } | null>(null);
+  const implantMatsRef = useRef<{
+    coCrMo: THREE.MeshPhysicalMaterial;
+    brushedTi: THREE.MeshPhysicalMaterial;
+    uhmwpe: THREE.MeshPhysicalMaterial;
+    screwGold: THREE.MeshPhysicalMaterial;
+  } | null>(null);
+  const ramusScrewShaftsRef = useRef<Array<{ mesh: THREE.Mesh; baseX: number }>>([]);
   const mainMeshRef = useRef<THREE.Mesh | null>(null);
   const refWireMeshRef = useRef<THREE.Mesh | null>(null);
   const nerveGroupRef = useRef<THREE.Group | null>(null);
@@ -232,6 +251,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     renderer.setSize(width, height);
     renderer.shadowMap.enabled = !isSoftwareGl;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    rendererRef.current = renderer;
 
     container.innerHTML = '';
     container.appendChild(renderer.domElement);
@@ -260,6 +280,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     const rimLight = new THREE.DirectionalLight(0xfef3c7, 1.15);
     rimLight.position.set(-14, 16, -20);
     scene.add(rimLight);
+    lightsRef.current = { hemi: hemiLight, key: keyLight, fill: fillLight, rim: rimLight };
 
     // Discreet XYZ Coordinate Axes Gizmo in Bottom Corner
     const axesHelper = new THREE.AxesHelper(4.5);
@@ -657,12 +678,18 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       metalness: 0.8,
       roughness: 0.4,
     });
+    implantMatsRef.current = {
+      coCrMo: coCrMoHeadMat,
+      brushedTi: brushedTiMat,
+      uhmwpe: uhmwpeFossaMat,
+      screwGold: anodizedScrewMat,
+    };
 
     // Component 1: Contoured UHMWPE Glenoid Fossa Articular Bearing Cup (Saddle Dome)
     const fossaDomeGeo = new THREE.SphereGeometry(
       1.15,
-      28,
-      20,
+      36,
+      26,
       0,
       Math.PI * 2,
       0,
@@ -673,7 +700,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     fossaDomeMesh.position.set(4.35, 1.35, -2.35);
     implantGroup.add(fossaDomeMesh);
 
-    // Component 2: Curved Titanium Zygomatic Arch Fixation Flange (Beveled Extrude Profile)
+    // Component 2: Curved Titanium Zygomatic Arch Fixation Flange (Smooth Beveled Extrude Profile)
     const zygomaShape = new THREE.Shape();
     zygomaShape.moveTo(-1.35, -0.22);
     zygomaShape.quadraticCurveTo(-0.45, 0.32, 0.55, 0.26);
@@ -682,11 +709,12 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
     const zygomaFlangeGeo = new THREE.ExtrudeGeometry(zygomaShape, {
       steps: 2,
+      curveSegments: 24,
       depth: 0.22,
       bevelEnabled: true,
-      bevelThickness: 0.06,
-      bevelSize: 0.06,
-      bevelSegments: 4,
+      bevelThickness: 0.08,
+      bevelSize: 0.08,
+      bevelSegments: 8,
     });
     zygomaFlangeGeo.rotateY(Math.PI / 2);
     const zygomaFlangeMesh = new THREE.Mesh(zygomaFlangeGeo, brushedTiMat);
@@ -697,7 +725,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     const zygomaScrewOffsets = [-0.85, -0.1, 0.68];
     zygomaScrewOffsets.forEach((zOff) => {
       const zScrewHead = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.14, 0.11, 0.16, 16),
+        new THREE.CylinderGeometry(0.14, 0.11, 0.16, 18),
         anodizedScrewMat,
       );
       zScrewHead.rotation.z = Math.PI / 2;
@@ -705,39 +733,40 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       implantGroup.add(zScrewHead);
     });
 
-    // Component 4: Mirror-Polished CoCrMo Ellipsoidal Condylar Bearing Head
-    const condyleHeadGeo = new THREE.SphereGeometry(0.72, 32, 24);
-    condyleHeadGeo.scale(0.88, 1.05, 0.95);
+    // Component 4: High-Res Smooth Beveled CoCrMo Ellipsoidal Condylar Bearing Head
+    const condyleHeadGeo = new THREE.SphereGeometry(0.74, 48, 36);
+    condyleHeadGeo.scale(0.94, 0.96, 0.92);
     const condyleHeadMesh = new THREE.Mesh(condyleHeadGeo, coCrMoHeadMat);
     condyleHeadMesh.position.set(4.35, 0.78, -2.35);
     condyleHeadMesh.castShadow = !isSoftwareGl;
     implantGroup.add(condyleHeadMesh);
 
-    // Component 5: Swept Tapered Condylar Neck & Load-Transfer Collar (Lathe + Curved Tube)
+    // Component 5: Smooth Sculpted Spline-Lathe Condylar Neck & Rounded Load-Transfer Collar
     const neckCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(4.35, 0.62, -2.35),
       new THREE.Vector3(4.52, 0.05, -2.22),
       new THREE.Vector3(4.65, -0.55, -1.98),
     ]);
-    const neckTubeGeo = new THREE.TubeGeometry(neckCurve, 24, 0.34, 18, false);
+    const neckTubeGeo = new THREE.TubeGeometry(neckCurve, 32, 0.34, 24, false);
     const neckMesh = new THREE.Mesh(neckTubeGeo, coCrMoHeadMat);
     implantGroup.add(neckMesh);
 
-    const collarProfile = [
-      new THREE.Vector2(0.0, -0.18),
-      new THREE.Vector2(0.46, -0.16),
-      new THREE.Vector2(0.52, 0.0),
-      new THREE.Vector2(0.4, 0.18),
-      new THREE.Vector2(0.0, 0.18),
-    ];
-    const collarLatheGeo = new THREE.LatheGeometry(collarProfile, 24);
+    const collarSpline = new THREE.SplineCurve([
+      new THREE.Vector2(0.01, -0.26),
+      new THREE.Vector2(0.36, -0.25),
+      new THREE.Vector2(0.54, -0.14),
+      new THREE.Vector2(0.56, 0.0),
+      new THREE.Vector2(0.46, 0.16),
+      new THREE.Vector2(0.32, 0.25),
+      new THREE.Vector2(0.01, 0.26),
+    ]);
+    const collarLatheGeo = new THREE.LatheGeometry(collarSpline.getPoints(28), 36);
     const neckCollarMesh = new THREE.Mesh(collarLatheGeo, brushedTiMat);
     neckCollarMesh.position.set(4.56, -0.15, -2.14);
     neckCollarMesh.rotation.x = 0.25;
     implantGroup.add(neckCollarMesh);
 
-    // Component 6: Anatomically Scalloped Mandibular Ramus Reconstruction Plate (Beveled ExtrudeGeometry)
-    // Contoured with rounded screw-bosses along the lateral mandibular ramus border
+    // Component 6: Smoothly Beveled Anatomically Scalloped Mandibular Ramus Reconstruction Plate
     const ramusPlateShape = new THREE.Shape();
     ramusPlateShape.moveTo(-0.42, 1.85);
     ramusPlateShape.bezierCurveTo(-0.68, 1.35, -0.58, 0.75, -0.45, 0.35);
@@ -750,11 +779,12 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
     const ramusPlateGeo = new THREE.ExtrudeGeometry(ramusPlateShape, {
       steps: 2,
-      depth: 0.24,
+      curveSegments: 28,
+      depth: 0.22,
       bevelEnabled: true,
-      bevelThickness: 0.08,
-      bevelSize: 0.07,
-      bevelSegments: 5,
+      bevelThickness: 0.11,
+      bevelSize: 0.09,
+      bevelSegments: 8,
     });
     ramusPlateGeo.rotateY(Math.PI / 2);
     const ramusPlateMesh = new THREE.Mesh(ramusPlateGeo, brushedTiMat);
@@ -764,8 +794,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     ramusPlateMesh.castShadow = !isSoftwareGl;
     implantGroup.add(ramusPlateMesh);
 
-    // Component 7: 5 Recessed Countersunk Locking Bezels + Torx Gold-Anodized Bicortical Bone Screws
-    // Positioned in an anatomical staggered 2-column locking pattern avoiding the Inferior Alveolar Nerve canal
+    // Component 7: 5 Recessed Countersunk Locking Bezels + Adjustable-Length Bicortical Bone Screws
     const ramusScrewCoords: Array<[number, number, number]> = [
       [4.76, -0.85, -1.82],
       [4.75, -1.55, -1.52],
@@ -774,15 +803,17 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       [4.71, -3.68, -1.72],
     ];
 
-    const bezelRingGeo = new THREE.TorusGeometry(0.22, 0.055, 12, 24);
+    const bezelRingGeo = new THREE.TorusGeometry(0.22, 0.055, 14, 28);
     bezelRingGeo.rotateY(Math.PI / 2);
     const screwHeadGeo = new THREE.CylinderGeometry(0.18, 0.14, 0.18, 18);
     screwHeadGeo.rotateZ(Math.PI / 2);
     const torxSocketGeo = new THREE.CylinderGeometry(0.08, 0.08, 0.2, 6);
     torxSocketGeo.rotateZ(Math.PI / 2);
-    const threadedShaftGeo = new THREE.CylinderGeometry(0.11, 0.08, 0.72, 14);
+    // Unit-length shaft (length = 1.0 along X) so we can scale dynamically to match Screw Length (mm)
+    const threadedShaftGeo = new THREE.CylinderGeometry(0.11, 0.065, 1.0, 14);
     threadedShaftGeo.rotateZ(Math.PI / 2);
 
+    const trackedShafts: Array<{ mesh: THREE.Mesh; baseX: number }> = [];
     ramusScrewCoords.forEach(([sx, sy, sz]) => {
       const bezelMesh = new THREE.Mesh(bezelRingGeo, coCrMoHeadMat);
       bezelMesh.position.set(sx + 0.08, sy, sz);
@@ -794,10 +825,12 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       sTorx.position.set(sx + 0.11, sy, sz);
 
       const sShaft = new THREE.Mesh(threadedShaftGeo, anodizedScrewMat);
-      sShaft.position.set(sx - 0.26, sy, sz);
+      sShaft.position.set(sx - 0.35, sy, sz);
+      trackedShafts.push({ mesh: sShaft, baseX: sx + 0.04 });
 
       implantGroup.add(bezelMesh, sHead, sTorx, sShaft);
     });
+    ramusScrewShaftsRef.current = trackedShafts;
 
     implantGroup.visible = false;
     anatomyRoot.add(implantGroup);
@@ -974,8 +1007,21 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     requestRenderRef.current();
   }, [referenceMeshData, compareMode]);
 
-  // Apply 3D Slicer / Clinical Volume Rendering Shader Presets
+  // Apply 3D Slicer / Clinical Volume Rendering Shader Presets, Light Brightness, Surface Shine & Screw Length
   useEffect(() => {
+    const lightScale = lightLevel / 100;
+    const shineNorm = surfaceShine / 100;
+
+    if (lightsRef.current) {
+      lightsRef.current.hemi.intensity = 0.88 * lightScale;
+      lightsRef.current.key.intensity = 2.0 * lightScale;
+      lightsRef.current.fill.intensity = 0.6 * lightScale;
+      lightsRef.current.rim.intensity = 1.05 * lightScale;
+    }
+    if (rendererRef.current) {
+      rendererRef.current.toneMappingExposure = 0.74 + lightScale * 0.42;
+    }
+
     if (mainMeshRef.current) {
       const mat = mainMeshRef.current.material as THREE.MeshPhysicalMaterial;
       mat.wireframe = wireframe;
@@ -983,38 +1029,50 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       if (shaderPreset === 'clinical_bone') {
         mat.vertexColors = true;
         mat.color.setHex(0xffffff);
-        mat.roughness = 0.34;
+        mat.roughness = 0.68 - shineNorm * 0.54;
         mat.metalness = 0.03;
-        mat.clearcoat = 0.32;
-        mat.clearcoatRoughness = 0.24;
+        mat.clearcoat = shineNorm * 0.88;
+        mat.clearcoatRoughness = 0.44 - shineNorm * 0.36;
         mat.opacity = meshOpacity;
         mat.depthWrite = meshOpacity > 0.82;
       } else if (shaderPreset === 'glass_nerve') {
         mat.vertexColors = false;
         mat.color.setHex(0xe2e8f0);
-        mat.roughness = 0.15;
+        mat.roughness = 0.42 - shineNorm * 0.34;
         mat.metalness = 0.05;
-        mat.clearcoat = 0.9;
+        mat.clearcoat = 0.35 + shineNorm * 0.65;
         mat.opacity = 0.34;
         mat.depthWrite = false;
       } else if (shaderPreset === 'vascular_amber') {
         mat.vertexColors = false;
         mat.color.setHex(0xd97706);
-        mat.roughness = 0.28;
+        mat.roughness = 0.62 - shineNorm * 0.5;
         mat.metalness = 0.08;
-        mat.clearcoat = 0.55;
+        mat.clearcoat = shineNorm * 0.92;
         mat.opacity = meshOpacity;
         mat.depthWrite = meshOpacity > 0.82;
       } else if (shaderPreset === 'cyan_mask') {
         mat.vertexColors = true;
         mat.color.setHex(0xffffff);
-        mat.roughness = 0.3;
+        mat.roughness = 0.64 - shineNorm * 0.5;
         mat.metalness = 0.08;
-        mat.clearcoat = 0.35;
+        mat.clearcoat = shineNorm * 0.85;
         mat.opacity = meshOpacity;
         mat.depthWrite = meshOpacity > 0.82;
       }
+      mat.envMapIntensity = 0.35 + shineNorm * 1.15;
       mat.needsUpdate = true;
+    }
+
+    if (implantMatsRef.current) {
+      implantMatsRef.current.coCrMo.roughness = 0.42 - shineNorm * 0.38;
+      implantMatsRef.current.coCrMo.clearcoat = 0.2 + shineNorm * 0.8;
+      implantMatsRef.current.coCrMo.envMapIntensity = 0.45 + shineNorm * 1.2;
+      implantMatsRef.current.brushedTi.roughness = 0.58 - shineNorm * 0.48;
+      implantMatsRef.current.brushedTi.clearcoat = shineNorm * 0.85;
+      implantMatsRef.current.brushedTi.envMapIntensity = 0.4 + shineNorm * 1.1;
+      implantMatsRef.current.screwGold.roughness = 0.48 - shineNorm * 0.38;
+      implantMatsRef.current.screwGold.envMapIntensity = 0.4 + shineNorm * 1.1;
     }
 
     if (nerveGroupRef.current) {
@@ -1028,6 +1086,12 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     }
 
     const mats = toothMaterialsRef.current;
+    if (mats) {
+      mats.naturalEnamel.roughness = 0.45 - shineNorm * 0.38;
+      mats.naturalEnamel.clearcoat = 0.25 + shineNorm * 0.75;
+      mats.naturalEnamel.envMapIntensity = 0.4 + shineNorm * 1.0;
+    }
+
     const MM_TO_SCENE = 0.25;
     teeth.forEach((tooth) => {
       const grp = teethMapRef.current.get(tooth.id);
@@ -1081,6 +1145,11 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
     if (implantGroupRef.current) {
       implantGroupRef.current.visible = showTitaniumImplant;
+      const shaftLenScene = implantScrewLenMm * 0.14; // Scaled to workstation skull ramus width
+      ramusScrewShaftsRef.current.forEach(({ mesh, baseX }) => {
+        mesh.scale.set(shaftLenScene, 1, 1);
+        mesh.position.x = baseX - shaftLenScene * 0.5;
+      });
     }
 
     if (laserGroupRef.current) {
@@ -1109,6 +1178,9 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     requestRenderRef.current();
   }, [
     shaderPreset,
+    lightLevel,
+    surfaceShine,
+    implantScrewLenMm,
     meshOpacity,
     wireframe,
     nerveOpacity,
@@ -1311,6 +1383,63 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             </div>
           )}
         </div>
+      </div>
+
+      {/* Live Light Brightness, Surface Shine & Screw Length Strip */}
+      <div className="px-3.5 py-2 border-t border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-[#0A192F] flex flex-wrap items-center gap-3 text-[10.5px] font-mono">
+        <label className="flex items-center gap-1.5 flex-1 min-w-[120px] text-slate-700 dark:text-slate-200">
+          <Sun className="w-3 h-3 text-[#FFD700] shrink-0" />
+          <span className="shrink-0">{language === 'en' ? 'Light' : 'Cahaya'}</span>
+          <input
+            type="range"
+            min={40}
+            max={220}
+            step={5}
+            value={lightLevel}
+            onChange={(e) => setLightLevel(parseInt(e.target.value, 10))}
+            className="w-full accent-[#FFD700] h-1 cursor-pointer"
+          />
+          <span className="w-8 text-right tabular-nums text-amber-700 dark:text-[#FFD700]">
+            {lightLevel}%
+          </span>
+        </label>
+
+        <label className="flex items-center gap-1.5 flex-1 min-w-[120px] text-slate-700 dark:text-slate-200">
+          <Sparkles className="w-3 h-3 text-[#0088AA] dark:text-[#00E5FF] shrink-0" />
+          <span className="shrink-0">{language === 'en' ? 'Shine' : 'Kilap'}</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={2}
+            value={surfaceShine}
+            onChange={(e) => setSurfaceShine(parseInt(e.target.value, 10))}
+            className="w-full accent-[#00E5FF] h-1 cursor-pointer"
+          />
+          <span className="w-8 text-right tabular-nums text-[#0088AA] dark:text-[#00E5FF]">
+            {surfaceShine}%
+          </span>
+        </label>
+
+        {showTitaniumImplant && (
+          <label className="flex items-center gap-1.5 flex-1 min-w-[130px] text-slate-700 dark:text-slate-200">
+            <span className="shrink-0 text-[#FFD700] font-bold">
+              {language === 'en' ? 'Screw' : 'Sekrup'}
+            </span>
+            <input
+              type="range"
+              min={3.5}
+              max={12.0}
+              step={0.5}
+              value={implantScrewLenMm}
+              onChange={(e) => setImplantScrewLenMm(parseFloat(e.target.value))}
+              className="w-full accent-[#FFD700] h-1 cursor-pointer"
+            />
+            <span className="w-10 text-right tabular-nums font-bold">
+              {implantScrewLenMm.toFixed(1)}mm
+            </span>
+          </label>
+        )}
       </div>
 
       {/* XYZ Hardware Alignment Fine-Adjustment Footer */}
