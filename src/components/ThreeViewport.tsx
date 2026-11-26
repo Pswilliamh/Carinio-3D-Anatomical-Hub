@@ -17,31 +17,96 @@ export interface ToothDescriptor {
   id: string;
   fdiNumber: string;
   arch: 'upper' | 'lower';
+  kind: 'molar' | 'premolar' | 'canine' | 'incisor';
   nameEn: string;
   nameId: string;
   visible: boolean;
+  status: 'natural' | 'scatter_crown' | 'replaced' | 'hidden';
   position: [number, number, number];
+  offsetX: number;
+  offsetY: number;
+  offsetZ: number;
+  tiltDeg: number;
+  rotYDeg: number;
+  scale: number;
 }
 
+export interface BiteAlignmentParams {
+  jawOpeningMm: number;
+  mandibularShiftX: number;
+  protrusionZ: number;
+  showOcclusalPlane: boolean;
+}
+
+export const DEFAULT_BITE_PARAMS: BiteAlignmentParams = {
+  jawOpeningMm: 0.0,
+  mandibularShiftX: 0.0,
+  protrusionZ: 0.0,
+  showOcclusalPlane: false,
+};
+
+function makeTooth(
+  id: string,
+  fdiNumber: string,
+  arch: 'upper' | 'lower',
+  kind: ToothDescriptor['kind'],
+  nameEn: string,
+  nameId: string,
+  position: [number, number, number],
+  status: ToothDescriptor['status'] = 'natural',
+): ToothDescriptor {
+  return {
+    id,
+    fdiNumber,
+    arch,
+    kind,
+    nameEn,
+    nameId,
+    visible: true,
+    status,
+    position,
+    offsetX: 0,
+    offsetY: 0,
+    offsetZ: 0,
+    tiltDeg: 0,
+    rotYDeg: 0,
+    scale: 1,
+  };
+}
+
+// Complete 28-Tooth Anatomical Human Dentition (Class I Intercuspation + Curve of Spee)
 export const INITIAL_TEETH_SET: ToothDescriptor[] = [
-  // Upper Arch (Maxillofacial - 8 Teeth)
-  { id: 't_17', fdiNumber: '#17', arch: 'upper', nameEn: 'Upper R 2nd Molar', nameId: 'Molar 2 Atas Kanan', visible: true, position: [-3.4, -1.6, 2.2] },
-  { id: 't_16', fdiNumber: '#16', arch: 'upper', nameEn: 'Upper R 1st Molar', nameId: 'Molar 1 Atas Kanan', visible: true, position: [-3.1, -1.6, 3.2] },
-  { id: 't_14', fdiNumber: '#14', arch: 'upper', nameEn: 'Upper R Premolar', nameId: 'Premolar Atas Kanan', visible: true, position: [-2.4, -1.6, 4.1] },
-  { id: 't_11', fdiNumber: '#11', arch: 'upper', nameEn: 'Upper R Central Incisor', nameId: 'Insisivus Atas Kanan', visible: true, position: [-0.8, -1.6, 4.8] },
-  { id: 't_21', fdiNumber: '#21', arch: 'upper', nameEn: 'Upper L Central Incisor', nameId: 'Insisivus Atas Kiri', visible: true, position: [0.8, -1.6, 4.8] },
-  { id: 't_24', fdiNumber: '#24', arch: 'upper', nameEn: 'Upper L Premolar', nameId: 'Premolar Atas Kiri', visible: true, position: [2.4, -1.6, 4.1] },
-  { id: 't_26', fdiNumber: '#26', arch: 'upper', nameEn: 'Upper L 1st Molar', nameId: 'Molar 1 Atas Kiri', visible: true, position: [3.1, -1.6, 3.2] },
-  { id: 't_27', fdiNumber: '#27', arch: 'upper', nameEn: 'Upper L 2nd Molar', nameId: 'Molar 2 Atas Kiri', visible: true, position: [3.4, -1.6, 2.2] },
-  // Lower Arch (Mandibular - 8 Teeth)
-  { id: 't_47', fdiNumber: '#47', arch: 'lower', nameEn: 'Lower R 2nd Molar', nameId: 'Molar 2 Bawah Kanan', visible: true, position: [-3.2, -3.1, 2.1] },
-  { id: 't_46', fdiNumber: '#46', arch: 'lower', nameEn: 'Lower R 1st Molar', nameId: 'Molar 1 Bawah Kanan', visible: true, position: [-2.9, -3.1, 3.1] },
-  { id: 't_44', fdiNumber: '#44', arch: 'lower', nameEn: 'Lower R Premolar', nameId: 'Premolar Bawah Kanan', visible: true, position: [-2.2, -3.1, 4.0] },
-  { id: 't_41', fdiNumber: '#41', arch: 'lower', nameEn: 'Lower R Central Incisor', nameId: 'Insisivus Bawah Kanan', visible: true, position: [-0.7, -3.1, 4.6] },
-  { id: 't_31', fdiNumber: '#31', arch: 'lower', nameEn: 'Lower L Central Incisor', nameId: 'Insisivus Bawah Kiri', visible: true, position: [0.7, -3.1, 4.6] },
-  { id: 't_34', fdiNumber: '#34', arch: 'lower', nameEn: 'Lower L Premolar', nameId: 'Premolar Bawah Kiri', visible: true, position: [2.2, -3.1, 4.0] },
-  { id: 't_36', fdiNumber: '#36', arch: 'lower', nameEn: 'Lower L 1st Molar', nameId: 'Molar 1 Bawah Kiri', visible: true, position: [2.9, -3.1, 3.1] },
-  { id: 't_37', fdiNumber: '#37', arch: 'lower', nameEn: 'Lower L 2nd Molar', nameId: 'Molar 2 Bawah Kiri', visible: true, position: [3.2, -3.1, 2.1] },
+  // Upper Arch (Maxillofacial — 14 Teeth: #17 to #27)
+  makeTooth('t_17', '#17', 'upper', 'molar', 'Upper R 2nd Molar', 'Molar 2 Atas Kanan', [-3.32, -1.62, 1.42]),
+  makeTooth('t_16', '#16', 'upper', 'molar', 'Upper R 1st Molar', 'Molar 1 Atas Kanan', [-3.12, -1.68, 2.34]),
+  makeTooth('t_15', '#15', 'upper', 'premolar', 'Upper R 2nd Premolar', 'Premolar 2 Atas Kanan', [-2.82, -1.72, 3.16]),
+  makeTooth('t_14', '#14', 'upper', 'premolar', 'Upper R 1st Premolar', 'Premolar 1 Atas Kanan', [-2.46, -1.73, 3.84]),
+  makeTooth('t_13', '#13', 'upper', 'canine', 'Upper R Canine', 'Kaninus Atas Kanan', [-1.96, -1.74, 4.42]),
+  makeTooth('t_12', '#12', 'upper', 'incisor', 'Upper R Lateral Incisor', 'Insisivus Lateral Atas Kanan', [-1.24, -1.7, 4.86]),
+  makeTooth('t_11', '#11', 'upper', 'incisor', 'Upper R Central Incisor', 'Insisivus Sentral Atas Kanan', [-0.46, -1.74, 5.08]),
+  makeTooth('t_21', '#21', 'upper', 'incisor', 'Upper L Central Incisor', 'Insisivus Sentral Atas Kiri', [0.46, -1.74, 5.08]),
+  makeTooth('t_22', '#22', 'upper', 'incisor', 'Upper L Lateral Incisor', 'Insisivus Lateral Atas Kiri', [1.24, -1.7, 4.86]),
+  makeTooth('t_23', '#23', 'upper', 'canine', 'Upper L Canine', 'Kaninus Atas Kiri', [1.96, -1.74, 4.42]),
+  makeTooth('t_24', '#24', 'upper', 'premolar', 'Upper L 1st Premolar', 'Premolar 1 Atas Kiri', [2.46, -1.73, 3.84]),
+  makeTooth('t_25', '#25', 'upper', 'premolar', 'Upper L 2nd Premolar', 'Premolar 2 Atas Kiri', [2.82, -1.72, 3.16]),
+  makeTooth('t_26', '#26', 'upper', 'molar', 'Upper L 1st Molar (Metal Crown)', 'Molar 1 Atas Kiri (Mahkota Logam)', [3.12, -1.68, 2.34], 'scatter_crown'),
+  makeTooth('t_27', '#27', 'upper', 'molar', 'Upper L 2nd Molar', 'Molar 2 Atas Kiri', [3.32, -1.62, 1.42]),
+
+  // Lower Arch (Mandibular — 14 Teeth: #47 to #37, tucked slightly lingual/inferior for Class I Bite)
+  makeTooth('t_47', '#47', 'lower', 'molar', 'Lower R 2nd Molar', 'Molar 2 Bawah Kanan', [-3.12, -2.56, 1.32]),
+  makeTooth('t_46', '#46', 'lower', 'molar', 'Lower R 1st Molar (Metal Crown)', 'Molar 1 Bawah Kanan (Mahkota Logam)', [-2.92, -2.62, 2.24], 'scatter_crown'),
+  makeTooth('t_45', '#45', 'lower', 'premolar', 'Lower R 2nd Premolar', 'Premolar 2 Bawah Kanan', [-2.62, -2.64, 3.04]),
+  makeTooth('t_44', '#44', 'lower', 'premolar', 'Lower R 1st Premolar', 'Premolar 1 Bawah Kanan', [-2.26, -2.64, 3.68]),
+  makeTooth('t_43', '#43', 'lower', 'canine', 'Lower R Canine', 'Kaninus Bawah Kanan', [-1.74, -2.62, 4.24]),
+  makeTooth('t_42', '#42', 'lower', 'incisor', 'Lower R Lateral Incisor', 'Insisivus Lateral Bawah Kanan', [-1.06, -2.58, 4.62]),
+  makeTooth('t_41', '#41', 'lower', 'incisor', 'Lower R Central Incisor', 'Insisivus Sentral Bawah Kanan', [-0.38, -2.58, 4.78]),
+  makeTooth('t_31', '#31', 'lower', 'incisor', 'Lower L Central Incisor', 'Insisivus Sentral Bawah Kiri', [0.38, -2.58, 4.78]),
+  makeTooth('t_32', '#32', 'lower', 'incisor', 'Lower L Lateral Incisor', 'Insisivus Lateral Bawah Kiri', [1.06, -2.58, 4.62]),
+  makeTooth('t_33', '#33', 'lower', 'canine', 'Lower L Canine', 'Kaninus Bawah Kiri', [1.74, -2.62, 4.24]),
+  makeTooth('t_34', '#34', 'lower', 'premolar', 'Lower L 1st Premolar', 'Premolar 1 Bawah Kiri', [2.26, -2.64, 3.68]),
+  makeTooth('t_35', '#35', 'lower', 'premolar', 'Lower L 2nd Premolar', 'Premolar 2 Bawah Kiri', [2.62, -2.64, 3.04]),
+  makeTooth('t_36', '#36', 'lower', 'molar', 'Lower L 1st Molar', 'Molar 1 Bawah Kiri', [2.92, -2.62, 2.24]),
+  makeTooth('t_37', '#37', 'lower', 'molar', 'Lower L 2nd Molar', 'Molar 2 Bawah Kiri', [3.12, -2.56, 1.32]),
 ];
 
 interface ThreeViewportProps {
@@ -53,10 +118,17 @@ interface ThreeViewportProps {
   compareMode: boolean;
   nerveOpacity: number;
   teeth: ToothDescriptor[];
+  selectedToothId?: string | null;
+  biteParams?: BiteAlignmentParams;
+  highlightReplacedCyan?: boolean;
   showTitaniumImplant: boolean;
   showLaserScanner: boolean;
   slices: [number, number, number];
+  volumeDims?: [number, number, number];
+  dicomSeriesLabel?: string | null;
   xyzOffsetMm: [number, number, number];
+  colorByLayers?: boolean;
+  onToggleColorByLayers?: (enabled: boolean) => void;
   onToggleTooth: (toothId: string) => void;
   onChangeXyzOffset: (newOffset: [number, number, number]) => void;
 }
@@ -81,17 +153,34 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   compareMode,
   nerveOpacity,
   teeth,
+  selectedToothId = null,
+  biteParams = DEFAULT_BITE_PARAMS,
+  highlightReplacedCyan = true,
   showTitaniumImplant,
   showLaserScanner,
   slices,
+  volumeDims = [40, 40, 40],
+  dicomSeriesLabel = null,
   xyzOffsetMm,
+  colorByLayers = false,
+  onToggleColorByLayers,
   onToggleTooth,
   onChangeXyzOffset,
 }) => {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
-  const [shaderPreset, setShaderPreset] = useState<VolumeShaderPreset>('clinical_bone');
+  const [shaderPreset, setShaderPreset] = useState<VolumeShaderPreset>(
+    colorByLayers ? 'cyan_mask' : 'clinical_bone',
+  );
+
+  useEffect(() => {
+    if (colorByLayers) {
+      setShaderPreset('cyan_mask');
+    } else if (shaderPreset === 'cyan_mask') {
+      setShaderPreset('clinical_bone');
+    }
+  }, [colorByLayers]);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -100,6 +189,13 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   const refWireMeshRef = useRef<THREE.Mesh | null>(null);
   const nerveGroupRef = useRef<THREE.Group | null>(null);
   const teethMapRef = useRef<Map<string, THREE.Group>>(new Map());
+  const toothMaterialsRef = useRef<{
+    naturalEnamel: THREE.MeshPhysicalMaterial;
+    scatterCrown: THREE.MeshPhysicalMaterial;
+    virtualCyanEnamel: THREE.MeshPhysicalMaterial;
+    selectedEnamel: THREE.MeshPhysicalMaterial;
+  } | null>(null);
+  const occlusalPlaneRef = useRef<THREE.Mesh | null>(null);
   const implantGroupRef = useRef<THREE.Group | null>(null);
   const laserGroupRef = useRef<THREE.Group | null>(null);
   const slicePlanesGroupRef = useRef<THREE.Group | null>(null);
@@ -252,7 +348,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     anatomyRoot.add(nerveGroup);
     nerveGroupRef.current = nerveGroup;
 
-    // 4. Anatomically Sculpted 16 Upper & Lower Teeth Sets (Multi-Cusp Molars, Bicuspid Premolars, Chisel Incisors, Cervical CEJ Collar & Multi-Roots)
+    // 4. Anatomically Sculpted 28 Upper & Lower Teeth Sets (Multi-Cusp Molars, Bicuspid Premolars, Pointed Canines, Chisel Incisors + Scatter Crowns & Virtual Replacement Shaders)
     const teethMap = new Map<string, THREE.Group>();
     const enamelMat = new THREE.MeshPhysicalMaterial({
       color: 0xfbf8f1,
@@ -264,6 +360,38 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       sheenColor: new THREE.Color(0xfff3d6),
       ior: 1.62,
     });
+    const scatterCrownMat = new THREE.MeshPhysicalMaterial({
+      color: 0xd946ef,
+      emissive: 0x701a75,
+      emissiveIntensity: 0.35,
+      roughness: 0.14,
+      metalness: 0.92,
+      clearcoat: 0.85,
+    });
+    const virtualCyanEnamelMat = new THREE.MeshPhysicalMaterial({
+      color: 0x38e8ff,
+      emissive: 0x0088aa,
+      emissiveIntensity: 0.35,
+      roughness: 0.14,
+      metalness: 0.08,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.08,
+    });
+    const selectedEnamelMat = new THREE.MeshPhysicalMaterial({
+      color: 0xccf7ff,
+      emissive: 0x00b4d8,
+      emissiveIntensity: 0.28,
+      roughness: 0.12,
+      metalness: 0.05,
+      clearcoat: 1.0,
+    });
+    toothMaterialsRef.current = {
+      naturalEnamel: enamelMat,
+      scatterCrown: scatterCrownMat,
+      virtualCyanEnamel: virtualCyanEnamelMat,
+      selectedEnamel: selectedEnamelMat,
+    };
+
     const cervicalDentinMat = new THREE.MeshPhysicalMaterial({
       color: 0xe6cda3,
       roughness: 0.26,
@@ -279,24 +407,22 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
     // Helper: Sculpt realistic anatomical tooth crown geometry with occlusal cusps & fissures
     const createAnatomicalCrownGeometry = (
-      kind: 'molar' | 'premolar' | 'incisor',
+      kind: 'molar' | 'premolar' | 'canine' | 'incisor',
       isUpper: boolean,
     ): THREE.BufferGeometry => {
       const signY = isUpper ? -1 : 1; // Occlusal biting surface direction
       if (kind === 'molar') {
-        const geo = new THREE.SphereGeometry(0.42, 24, 20);
+        const geo = new THREE.SphereGeometry(0.41, 24, 20);
         const pos = geo.attributes.position;
         for (let i = 0; i < pos.count; i++) {
           let vx = pos.getX(i);
           let vy = pos.getY(i);
           let vz = pos.getZ(i);
 
-          // Broaden molar crown buccolingually & mesiodistally with slightly rounded square profile
           const sqFactor = 1 + 0.14 * Math.cos(Math.atan2(vz, vx) * 4);
-          vx *= 1.12 * sqFactor;
-          vz *= 1.04 * sqFactor;
+          vx *= 1.08 * sqFactor;
+          vz *= 1.05 * sqFactor;
 
-          // Sculpt 4 anatomical occlusal cusps (mesiobuccal, distobuccal, mesiolingual, distolingual) + central pit
           const isOcclusalHalf = vy * signY > 0;
           if (isOcclusalHalf) {
             const cuspWave =
@@ -305,28 +431,26 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             const centralFissure = Math.exp(-(vx * vx + vz * vz) * 14) * 0.13;
             vy += signY * (Math.abs(cuspWave) - centralFissure);
           } else {
-            // Taper slightly toward the cervical neck (CEJ)
-            vx *= 0.86;
-            vz *= 0.86;
+            vx *= 0.85;
+            vz *= 0.85;
           }
-          pos.setXYZ(i, vx, vy * 0.82, vz);
+          pos.setXYZ(i, vx, vy * 0.85, vz);
         }
         geo.computeVertexNormals();
         return geo;
       }
 
       if (kind === 'premolar') {
-        const geo = new THREE.SphereGeometry(0.34, 22, 18);
+        const geo = new THREE.SphereGeometry(0.33, 22, 18);
         const pos = geo.attributes.position;
         for (let i = 0; i < pos.count; i++) {
           let vx = pos.getX(i);
           let vy = pos.getY(i);
           let vz = pos.getZ(i);
 
-          vx *= 1.05;
+          vx *= 1.02;
           vz *= 0.92;
           if (vy * signY > 0) {
-            // Bicuspid 2-cusp buccal/lingual ridge with central groove
             const bicuspidCusp = Math.abs(Math.sin(vx * 7.5)) * 0.09;
             const groove = Math.exp(-vx * vx * 22) * 0.1;
             vy += signY * (bicuspidCusp - groove);
@@ -334,7 +458,24 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             vx *= 0.84;
             vz *= 0.84;
           }
-          pos.setXYZ(i, vx, vy * 0.88, vz);
+          pos.setXYZ(i, vx, vy * 0.9, vz);
+        }
+        geo.computeVertexNormals();
+        return geo;
+      }
+
+      if (kind === 'canine') {
+        const geo = new THREE.SphereGeometry(0.32, 22, 18);
+        const pos = geo.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+          let vx = pos.getX(i) * 0.94;
+          let vy = pos.getY(i) * 1.16;
+          let vz = pos.getZ(i) * 0.84;
+          if (vy * signY > 0) {
+            const tipPeak = Math.exp(-(vx * vx + vz * vz) * 14) * 0.16;
+            vy += signY * tipPeak;
+          }
+          pos.setXYZ(i, vx, vy, vz);
         }
         geo.computeVertexNormals();
         return geo;
@@ -344,14 +485,12 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       const geo = new THREE.SphereGeometry(0.31, 22, 18);
       const pos = geo.attributes.position;
       for (let i = 0; i < pos.count; i++) {
-        let vx = pos.getX(i) * 1.18; // Mesiodistal spade width
-        let vy = pos.getY(i) * 1.08;
+        let vx = pos.getX(i) * 1.12;
+        let vy = pos.getY(i) * 1.12;
         let vz = pos.getZ(i);
 
-        // Chisel taper toward the incisal biting edge
         const occProgress = Math.max(0, (vy * signY + 0.31) / 0.62);
-        vz *= 0.72 * (1 - occProgress * 0.58);
-        // Subtle lingual shovel concavity
+        vz *= 0.7 * (1 - occProgress * 0.56);
         if (vz < 0) {
           vz += Math.exp(-(vx * vx) * 12) * 0.06;
         }
@@ -361,49 +500,43 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       return geo;
     };
 
-    const upperMolarCrownGeo = createAnatomicalCrownGeometry('molar', true);
-    const lowerMolarCrownGeo = createAnatomicalCrownGeometry('molar', false);
-    const upperPremolarCrownGeo = createAnatomicalCrownGeometry('premolar', true);
-    const lowerPremolarCrownGeo = createAnatomicalCrownGeometry('premolar', false);
-    const upperIncisorCrownGeo = createAnatomicalCrownGeometry('incisor', true);
-    const lowerIncisorCrownGeo = createAnatomicalCrownGeometry('incisor', false);
+    const crownGeos = {
+      upper: {
+        molar: createAnatomicalCrownGeometry('molar', true),
+        premolar: createAnatomicalCrownGeometry('premolar', true),
+        canine: createAnatomicalCrownGeometry('canine', true),
+        incisor: createAnatomicalCrownGeometry('incisor', true),
+      },
+      lower: {
+        molar: createAnatomicalCrownGeometry('molar', false),
+        premolar: createAnatomicalCrownGeometry('premolar', false),
+        canine: createAnatomicalCrownGeometry('canine', false),
+        incisor: createAnatomicalCrownGeometry('incisor', false),
+      },
+    };
 
     INITIAL_TEETH_SET.forEach((tooth) => {
       const tGroup = new THREE.Group();
+      const baseArchYaw = Math.atan2(tooth.position[0], Math.max(0.4, tooth.position[2] + 0.9)) * 0.68;
       tGroup.position.set(tooth.position[0], tooth.position[1], tooth.position[2]);
-
-      // Orient each tooth tangent to the parabolic dental arch curve
-      const archYaw = Math.atan2(tooth.position[0], Math.max(0.5, tooth.position[2] + 1.2)) * 0.55;
-      tGroup.rotation.y = archYaw;
-      tGroup.userData = { toothId: tooth.id };
+      tGroup.rotation.y = baseArchYaw;
+      tGroup.userData = { toothId: tooth.id, baseArchYaw };
 
       const isUpper = tooth.arch === 'upper';
-      const isMolar = tooth.nameEn.includes('Molar');
-      const isPremolar = tooth.nameEn.includes('Premolar');
-
-      const crownGeo = isMolar
-        ? isUpper
-          ? upperMolarCrownGeo
-          : lowerMolarCrownGeo
-        : isPremolar
-          ? isUpper
-            ? upperPremolarCrownGeo
-            : lowerPremolarCrownGeo
-          : isUpper
-            ? upperIncisorCrownGeo
-            : lowerIncisorCrownGeo;
+      const crownGeo = crownGeos[tooth.arch][tooth.kind];
 
       const crownMesh = new THREE.Mesh(crownGeo, enamelMat);
       crownMesh.castShadow = !isSoftwareGl;
       crownMesh.receiveShadow = !isSoftwareGl;
-      crownMesh.userData = { toothId: tooth.id };
+      crownMesh.userData = { toothId: tooth.id, isCrown: true };
       crownMesh.layers.enable(1);
       tGroup.add(crownMesh);
 
       // Part 2: Cervical Enamel-Cementum Junction (CEJ) Neck Collar
       const rootSign = isUpper ? 1 : -1;
-      const collarRadius = isMolar ? 0.34 : isPremolar ? 0.26 : 0.22;
-      const collarGeo = new THREE.TorusGeometry(collarRadius, 0.055, 10, 20);
+      const collarRadius =
+        tooth.kind === 'molar' ? 0.33 : tooth.kind === 'premolar' ? 0.25 : 0.21;
+      const collarGeo = new THREE.TorusGeometry(collarRadius, 0.05, 10, 20);
       collarGeo.rotateX(Math.PI / 2);
       const collarMesh = new THREE.Mesh(collarGeo, cervicalDentinMat);
       collarMesh.position.y = rootSign * 0.22;
@@ -411,40 +544,41 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       collarMesh.layers.enable(1);
       tGroup.add(collarMesh);
 
-      // Part 3: Anatomically Bifurcated / Trifurcated Curved Roots for Molars vs Single Tapered Root
-      if (isMolar) {
+      // Part 3: Anatomically Bifurcated / Trifurcated Curved Roots
+      if (tooth.kind === 'molar') {
         const rootOffsets: Array<[number, number]> = isUpper
           ? [
               [-0.14, 0.1],
               [0.14, 0.1],
-              [0.0, -0.14], // Palatal 3rd root on upper molars
+              [0.0, -0.14],
             ]
           : [
               [-0.12, 0.12],
-              [0.12, -0.12], // Mesial & Distal roots on lower molars
+              [0.12, -0.12],
             ];
         rootOffsets.forEach(([rx, rz]) => {
           const rCurve = new THREE.CatmullRomCurve3([
             new THREE.Vector3(rx * 0.5, rootSign * 0.22, rz * 0.5),
-            new THREE.Vector3(rx * 1.15, rootSign * 0.62, rz * 1.1),
-            new THREE.Vector3(rx * 0.95, rootSign * 1.05, rz * 1.25),
+            new THREE.Vector3(rx * 1.12, rootSign * 0.62, rz * 1.08),
+            new THREE.Vector3(rx * 0.92, rootSign * 1.02, rz * 1.2),
           ]);
-          const rGeo = new THREE.TubeGeometry(rCurve, 12, 0.11, 10, false);
+          const rGeo = new THREE.TubeGeometry(rCurve, 12, 0.1, 10, false);
           const rMesh = new THREE.Mesh(rGeo, cementumRootMat);
           rMesh.userData = { toothId: tooth.id };
           rMesh.layers.enable(1);
           tGroup.add(rMesh);
         });
       } else {
+        const rootLen = tooth.kind === 'canine' ? 1.24 : 1.02;
         const singleRootCurve = new THREE.CatmullRomCurve3([
           new THREE.Vector3(0, rootSign * 0.2, 0),
-          new THREE.Vector3(0, rootSign * 0.65, -0.05),
-          new THREE.Vector3(0, rootSign * 1.08, -0.12),
+          new THREE.Vector3(0, rootSign * (rootLen * 0.6), -0.05),
+          new THREE.Vector3(0, rootSign * rootLen, -0.11),
         ]);
         const rGeo = new THREE.TubeGeometry(
           singleRootCurve,
           12,
-          isPremolar ? 0.14 : 0.12,
+          tooth.kind === 'premolar' ? 0.13 : 0.11,
           10,
           false,
         );
@@ -458,6 +592,22 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       teethMap.set(tooth.id, tGroup);
     });
     teethMapRef.current = teethMap;
+
+    // 4B. Translucent Cyan Occlusal Bite Alignment Reference Plane
+    const occlusalGeo = new THREE.PlaneGeometry(8.8, 6.2);
+    occlusalGeo.rotateX(-Math.PI / 2);
+    const occlusalMat = new THREE.MeshBasicMaterial({
+      color: 0x00e5ff,
+      transparent: true,
+      opacity: 0.18,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const occlusalPlane = new THREE.Mesh(occlusalGeo, occlusalMat);
+    occlusalPlane.position.set(0, -2.14, 3.2);
+    occlusalPlane.visible = false;
+    anatomyRoot.add(occlusalPlane);
+    occlusalPlaneRef.current = occlusalPlane;
 
     // 5. Realistic Custom Total TMJ Prosthetic System (12-Part Orthopaedic Device: UHMWPE Fossa + CoCrMo Condyle + Scalloped Ti-6Al-4V Ramus Plate + Countersunk Torx Screws)
     const implantGroup = new THREE.Group();
@@ -856,11 +1006,11 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         mat.opacity = meshOpacity;
         mat.depthWrite = meshOpacity > 0.82;
       } else if (shaderPreset === 'cyan_mask') {
-        mat.vertexColors = false;
-        mat.color.setHex(0x00e5ff);
-        mat.roughness = 0.32;
-        mat.metalness = 0.12;
-        mat.clearcoat = 0.3;
+        mat.vertexColors = true;
+        mat.color.setHex(0xffffff);
+        mat.roughness = 0.3;
+        mat.metalness = 0.08;
+        mat.clearcoat = 0.35;
         mat.opacity = meshOpacity;
         mat.depthWrite = meshOpacity > 0.82;
       }
@@ -877,12 +1027,57 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       });
     }
 
+    const mats = toothMaterialsRef.current;
+    const MM_TO_SCENE = 0.25;
     teeth.forEach((tooth) => {
       const grp = teethMapRef.current.get(tooth.id);
       if (grp) {
-        grp.visible = tooth.visible;
+        grp.visible = tooth.visible && tooth.status !== 'hidden';
+        const isLower = tooth.arch === 'lower';
+        const jawY = isLower ? -biteParams.jawOpeningMm * MM_TO_SCENE : 0;
+        const jawX = isLower ? biteParams.mandibularShiftX * MM_TO_SCENE : 0;
+        const jawZ = isLower ? biteParams.protrusionZ * MM_TO_SCENE : 0;
+
+        grp.position.set(
+          tooth.position[0] + tooth.offsetX * MM_TO_SCENE + jawX,
+          tooth.position[1] + tooth.offsetY * MM_TO_SCENE + jawY,
+          tooth.position[2] + tooth.offsetZ * MM_TO_SCENE + jawZ,
+        );
+
+        const baseYaw = (grp.userData?.baseArchYaw as number) || 0;
+        grp.rotation.set(
+          (tooth.tiltDeg * Math.PI) / 180,
+          baseYaw + (tooth.rotYDeg * Math.PI) / 180,
+          0,
+        );
+        grp.scale.setScalar(tooth.scale);
+
+        if (mats) {
+          const isSelected = selectedToothId === tooth.id;
+          const targetCrownMat =
+            tooth.status === 'scatter_crown'
+              ? mats.scatterCrown
+              : tooth.status === 'replaced'
+                ? highlightReplacedCyan
+                  ? mats.virtualCyanEnamel
+                  : mats.naturalEnamel
+                : isSelected
+                  ? mats.selectedEnamel
+                  : mats.naturalEnamel;
+
+          grp.children.forEach((child) => {
+            if ((child as THREE.Mesh).isMesh && child.userData?.isCrown) {
+              (child as THREE.Mesh).material = targetCrownMat;
+            }
+          });
+        }
       }
     });
+
+    if (occlusalPlaneRef.current) {
+      occlusalPlaneRef.current.visible = biteParams.showOcclusalPlane;
+      occlusalPlaneRef.current.position.y = -2.14 - biteParams.jawOpeningMm * MM_TO_SCENE * 0.5;
+    }
 
     if (implantGroupRef.current) {
       implantGroupRef.current.visible = showTitaniumImplant;
@@ -893,7 +1088,9 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     }
 
     if (slicePlanesGroupRef.current && slicePlanesGroupRef.current.children[0]) {
-      slicePlanesGroupRef.current.children[0].position.y = (slices[2] - 20) * 0.5;
+      const nz = volumeDims[2] || 40;
+      const voxelScale = 20 / Math.max(volumeDims[0] || 40, volumeDims[1] || 40, nz);
+      slicePlanesGroupRef.current.children[0].position.y = (slices[2] - nz * 0.5) * voxelScale;
     }
 
     if (anatomyRootRef.current) {
@@ -916,9 +1113,13 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     wireframe,
     nerveOpacity,
     teeth,
+    selectedToothId,
+    biteParams,
+    highlightReplacedCyan,
     showTitaniumImplant,
     showLaserScanner,
     slices,
+    volumeDims,
     xyzOffsetMm,
     autoRotate,
   ]);
@@ -945,7 +1146,10 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         {/* Simple 1-Click 3D Slicer / DICOM Shader Style Selector */}
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setShaderPreset('clinical_bone')}
+            onClick={() => {
+              setShaderPreset('clinical_bone');
+              onToggleColorByLayers?.(false);
+            }}
             className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
               shaderPreset === 'clinical_bone'
                 ? 'bg-[#E8D2AC] text-[#0A192F] font-bold'
@@ -956,7 +1160,10 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             {language === 'en' ? 'Ivory Bone' : 'Tulang Gading'}
           </button>
           <button
-            onClick={() => setShaderPreset('glass_nerve')}
+            onClick={() => {
+              setShaderPreset('glass_nerve');
+              onToggleColorByLayers?.(false);
+            }}
             className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
               shaderPreset === 'glass_nerve'
                 ? 'bg-[#FFD700] text-[#0A192F] font-bold'
@@ -967,7 +1174,10 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             {language === 'en' ? 'X-Ray Nerve' : 'Transparan Saraf'}
           </button>
           <button
-            onClick={() => setShaderPreset('vascular_amber')}
+            onClick={() => {
+              setShaderPreset('vascular_amber');
+              onToggleColorByLayers?.(false);
+            }}
             className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
               shaderPreset === 'vascular_amber'
                 ? 'bg-amber-500 text-[#0A192F] font-bold'
@@ -978,15 +1188,18 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             CT-Amber
           </button>
           <button
-            onClick={() => setShaderPreset('cyan_mask')}
+            onClick={() => {
+              setShaderPreset('cyan_mask');
+              onToggleColorByLayers?.(true);
+            }}
             className={`px-2 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
               shaderPreset === 'cyan_mask'
                 ? 'bg-[#00E5FF] text-[#0A192F] font-bold'
                 : 'bg-slate-200 dark:bg-[#112240] text-slate-600 dark:text-slate-300'
             }`}
-            title="Cyan Segmentation Mask"
+            title="4-Color Separated Segmentation Layers (Cyan / Green / Yellow / Magenta)"
           >
-            Mask
+            {language === 'en' ? '4-Layers' : '4-Lapisan'}
           </button>
         </div>
       </div>
@@ -1007,8 +1220,8 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         </div>
 
         {/* Top-Right Clinical Series Label */}
-        <div className="absolute top-2 right-5 text-[9.5px] font-mono text-slate-400 text-right leading-tight pointer-events-none space-y-0.5">
-          <div>TC CRANIO-TMJ 3D</div>
+        <div className="absolute top-2 right-5 text-[9.5px] font-mono text-slate-400 text-right leading-tight pointer-events-none space-y-0.5 max-w-[160px] truncate">
+          <div className="truncate">{dicomSeriesLabel || 'TC CRANIO-TMJ 3D'}</div>
           <div>Serie: Ricostruzione Volumetrica</div>
         </div>
 

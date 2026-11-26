@@ -1,17 +1,29 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ZoomIn, ZoomOut, Ruler } from 'lucide-react';
 import { CachedVolumeRecord } from '../services/indexedDbCache';
-import { AnatomicalLandmark } from '../services/volumeGenerator';
+import {
+  AnatomicalLandmark,
+  SEGMENTATION_LAYER_META,
+  SegmentationLayerId,
+} from '../services/volumeGenerator';
 import { Language } from '../i18n/translations';
 
 export type MprPlane = 'axial' | 'coronal' | 'sagittal';
-export type WorkstationTool = 'navigate' | 'brush' | 'lasso' | 'region_grow' | 'caliper';
+export type WorkstationTool =
+  | 'navigate'
+  | 'brush'
+  | 'lasso'
+  | 'region_grow'
+  | 'caliper'
+  | 'paint_layer';
 
 interface MprSliceViewerProps {
   plane: MprPlane;
   language: Language;
   volume: CachedVolumeRecord;
   activeMask: Uint8Array;
+  layerMap: Uint8Array;
+  activePaintLayer: SegmentationLayerId;
   slices: [number, number, number]; // [x, y, z]
   windowWidth: number;
   windowLevel: number;
@@ -22,6 +34,7 @@ interface MprSliceViewerProps {
   landmarks: AnatomicalLandmark[];
   onSliceChange: (newSlices: [number, number, number]) => void;
   onEraseVoxels: (voxelIndices: number[]) => void;
+  onPaintLayerVoxels: (voxelIndices: number[], layerId: SegmentationLayerId) => void;
   onSeedRegionGrow: (seed: [number, number, number]) => void;
   onRecordMeasurement: (distanceMm: number, planeLabel: string) => void;
 }
@@ -45,6 +58,8 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
   language,
   volume,
   activeMask,
+  layerMap,
+  activePaintLayer,
   slices,
   windowWidth,
   windowLevel,
@@ -55,6 +70,7 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
   landmarks,
   onSliceChange,
   onEraseVoxels,
+  onPaintLayerVoxels,
   onSeedRegionGrow,
   onRecordMeasurement,
 }) => {
@@ -110,26 +126,35 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
     },
   }[plane];
 
+  const uDim = plane === 'axial' ? nx : plane === 'coronal' ? nx : ny;
+  const vDim = plane === 'axial' ? ny : plane === 'coronal' ? nz : nz;
+  const uMax = uDim - 1;
+  const vMax = vDim - 1;
+
+  const safeSx = Math.max(0, Math.min(nx - 1, sx));
+  const safeSy = Math.max(0, Math.min(ny - 1, sy));
+  const safeSz = Math.max(0, Math.min(nz - 1, sz));
+
   const uvToVoxel = (u: number, v: number): [number, number, number] => {
-    const cu = Math.max(0, Math.min(39, Math.floor(u)));
-    const cv = Math.max(0, Math.min(39, Math.floor(v)));
+    const cu = Math.max(0, Math.min(uMax, Math.floor(u)));
+    const cv = Math.max(0, Math.min(vMax, Math.floor(v)));
     if (plane === 'axial') {
-      return [cu, 39 - cv, sz];
+      return [cu, vMax - cv, safeSz];
     }
     if (plane === 'coronal') {
-      return [cu, sy, 39 - cv];
+      return [cu, safeSy, vMax - cv];
     }
-    return [sx, 39 - cu, 39 - cv];
+    return [safeSx, uMax - cu, vMax - cv];
   };
 
   const voxelToUv = (vx: number, vy: number, vz: number): [number, number, boolean] => {
     if (plane === 'axial') {
-      return [vx, 39 - vy, Math.abs(vz - sz) <= 1];
+      return [vx, vMax - vy, Math.abs(vz - safeSz) <= 1];
     }
     if (plane === 'coronal') {
-      return [vx, 39 - vz, Math.abs(vy - sy) <= 1];
+      return [vx, vMax - vz, Math.abs(vy - safeSy) <= 1];
     }
-    return [39 - vy, 39 - vz, Math.abs(vx - sx) <= 1];
+    return [uMax - vy, vMax - vz, Math.abs(vx - safeSx) <= 1];
   };
 
   const idx3D = (x: number, y: number, z: number) => z * (nx * ny) + y * nx + x;
@@ -175,17 +200,17 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
       return activeMask[idx3D(vx, vy, vz)];
     };
 
-    // Bilinear interpolation across the 40x40 slice grid for smooth medical DICOM appearance
+    // Bilinear interpolation across the slice grid for smooth medical DICOM appearance
     for (let py = 0; py < bufH; py++) {
-      const gv = (py / (bufH - 1)) * 39;
+      const gv = (py / (bufH - 1)) * vMax;
       const v0 = Math.floor(gv);
-      const v1 = Math.min(39, v0 + 1);
+      const v1 = Math.min(vMax, v0 + 1);
       const fv = gv - v0;
 
       for (let px = 0; px < bufW; px++) {
-        const gu = (px / (bufW - 1)) * 39;
+        const gu = (px / (bufW - 1)) * uMax;
         const u0 = Math.floor(gu);
-        const u1 = Math.min(39, u0 + 1);
+        const u1 = Math.min(uMax, u0 + 1);
         const fu = gu - u0;
 
         const hu00 = sampleHuAt(u0, v0);
@@ -223,11 +248,14 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
 
         if (interpMask >= 0.35) {
           const isContourEdge = interpMask >= 0.35 && interpMask <= 0.72;
-          const alpha = isContourEdge ? 0.92 : 0.34;
+          const alpha = isContourEdge ? 0.92 : 0.38;
 
-          let mr = 0;
-          let mg = 229;
-          let mb = 255;
+          const assignedLayer = ((layerMap[ni] || 1) as SegmentationLayerId);
+          const layerRgb = SEGMENTATION_LAYER_META[assignedLayer]?.rgb || [0, 229, 255];
+
+          let mr = layerRgb[0];
+          let mg = layerRgb[1];
+          let mb = layerRgb[2];
 
           if (compareMode) {
             if (isScatter) {
@@ -243,10 +271,6 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
               mg = 215;
               mb = 0; // Unseparated temporal bone: Gold
             }
-          } else if (isScatter) {
-            mr = 56;
-            mg = 235;
-            mb = 255;
           }
 
           r = Math.round(gray * (1 - alpha) + mr * alpha);
@@ -269,9 +293,9 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
 
     offCtx.putImageData(imgData, 0, 0);
 
-    const gridW = 40;
-    const gridH = 40;
-    const baseCell = (width / gridW) * zoom;
+    const gridW = uDim;
+    const gridH = vDim;
+    const baseCell = (width / Math.max(gridW, gridH)) * zoom;
     const drawW = gridW * baseCell;
     const drawH = gridH * baseCell;
     const offsetX = (width - drawW) * 0.5;
@@ -282,7 +306,7 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
     ctx.drawImage(offCanvas, offsetX, offsetY, drawW, drawH);
 
     // Draw Synchronized Crosshairs (Clinical Thin Hairlines)
-    const [crossU, crossV] = voxelToUv(sx, sy, sz);
+    const [crossU, crossV] = voxelToUv(safeSx, safeSy, safeSz);
     const cx = offsetX + (crossU + 0.5) * baseCell;
     const cy = offsetY + (crossV + 0.5) * baseCell;
 
@@ -316,7 +340,8 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
     ctx.stroke();
     ctx.fillStyle = 'rgba(148, 163, 184, 0.85)';
     ctx.font = '500 9px "IBM Plex Mono", monospace';
-    ctx.fillText(`${(40 * calibrationMm * 0.1).toFixed(1)} cm`, rulerX - 28, rulerBottom + 12);
+    const fovCm = (vDim * (volume.voxelSpacingMm[0] || calibrationMm) * 0.1).toFixed(1);
+    ctx.fillText(`${fovCm} cm`, rulerX - 28, rulerBottom + 12);
 
     // Draw Automated Anatomical Landmarks
     for (const lm of landmarks) {
@@ -393,6 +418,7 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
   }, [
     volume,
     activeMask,
+    layerMap,
     slices,
     windowWidth,
     windowLevel,
@@ -407,39 +433,42 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
 
   const getUvFromPointerEvent = (e: React.PointerEvent<HTMLCanvasElement>): [number, number] => {
     const canvas = canvasRef.current;
-    if (!canvas) return [20, 20];
+    if (!canvas) return [Math.floor(uDim / 2), Math.floor(vDim / 2)];
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     const cx = (e.clientX - rect.left) * scaleX;
     const cy = (e.clientY - rect.top) * scaleY;
 
-    const gridW = 40;
-    const baseCell = (canvas.width / gridW) * zoom;
-    const offsetX = (canvas.width - gridW * baseCell) * 0.5;
-    const offsetY = (canvas.height - gridW * baseCell) * 0.5;
+    const baseCell = (canvas.width / Math.max(uDim, vDim)) * zoom;
+    const offsetX = (canvas.width - uDim * baseCell) * 0.5;
+    const offsetY = (canvas.height - vDim * baseCell) * 0.5;
 
-    const u = Math.max(0, Math.min(39, Math.floor((cx - offsetX) / baseCell)));
-    const v = Math.max(0, Math.min(39, Math.floor((cy - offsetY) / baseCell)));
+    const u = Math.max(0, Math.min(uMax, Math.floor((cx - offsetX) / baseCell)));
+    const v = Math.max(0, Math.min(vMax, Math.floor((cy - offsetY) / baseCell)));
     return [u, v];
   };
 
-  const applyBrushEraseAtUv = (u: number, v: number) => {
-    const toErase: number[] = [];
+  const applyBrushAtUv = (u: number, v: number, mode: 'erase' | 'paint') => {
+    const affected: number[] = [];
     for (let dv = -brushRadius; dv <= brushRadius; dv++) {
       for (let du = -brushRadius; du <= brushRadius; du++) {
         if (du * du + dv * dv <= brushRadius * brushRadius + 0.5) {
           const nu = u + du;
           const nv = v + dv;
-          if (nu >= 0 && nu < 40 && nv >= 0 && nv < 40) {
+          if (nu >= 0 && nu < uDim && nv >= 0 && nv < vDim) {
             const [vx, vy, vz] = uvToVoxel(nu, nv);
-            toErase.push(idx3D(vx, vy, vz));
+            affected.push(idx3D(vx, vy, vz));
           }
         }
       }
     }
-    if (toErase.length > 0) {
-      onEraseVoxels(toErase);
+    if (affected.length > 0) {
+      if (mode === 'erase') {
+        onEraseVoxels(affected);
+      } else {
+        onPaintLayerVoxels(affected, activePaintLayer);
+      }
     }
   };
 
@@ -452,7 +481,9 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
     if (activeTool === 'navigate') {
       onSliceChange([vx, vy, vz]);
     } else if (activeTool === 'brush') {
-      applyBrushEraseAtUv(u, v);
+      applyBrushAtUv(u, v, 'erase');
+    } else if (activeTool === 'paint_layer') {
+      applyBrushAtUv(u, v, 'paint');
     } else if (activeTool === 'lasso') {
       setLassoPoints([[u, v]]);
     } else if (activeTool === 'region_grow') {
@@ -485,7 +516,9 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
     if (activeTool === 'navigate') {
       onSliceChange([vx, vy, vz]);
     } else if (activeTool === 'brush') {
-      applyBrushEraseAtUv(u, v);
+      applyBrushAtUv(u, v, 'erase');
+    } else if (activeTool === 'paint_layer') {
+      applyBrushAtUv(u, v, 'paint');
     } else if (activeTool === 'lasso') {
       setLassoPoints((prev) => {
         const last = prev[prev.length - 1];
@@ -500,8 +533,8 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
   const handlePointerUp = () => {
     if (isPointerDown && activeTool === 'lasso' && lassoPoints.length >= 3) {
       const toErase: number[] = [];
-      for (let v = 0; v < 40; v++) {
-        for (let u = 0; u < 40; u++) {
+      for (let v = 0; v < vDim; v++) {
+        for (let u = 0; u < uDim; u++) {
           if (pointInPolygon(u, v, lassoPoints)) {
             const [vx, vy, vz] = uvToVoxel(u, v);
             toErase.push(idx3D(vx, vy, vz));
@@ -579,14 +612,26 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
 
         {/* Top-Left Clinical PACS Study Telemetry (iMed / 3D Slicer Reference Style) */}
         <div className="absolute top-2 left-2.5 text-[9.5px] font-mono text-slate-300/90 leading-tight pointer-events-none space-y-0.5 tabular-nums">
-          <div className="text-[#00E5FF] font-semibold">Studio: KARINA-3D-CT</div>
-          <div>Thick: {calibrationMm.toFixed(2)} mm</div>
-          <div>Loc: {((planeMeta.sliceVal + 1) * calibrationMm).toFixed(2)} mm</div>
+          <div className="text-[#00E5FF] font-semibold">
+            {volume.dicomMeta?.isCustomDicom
+              ? `DICOM: ${volume.dicomMeta.modality}`
+              : 'Studio: KARINA-3D-CT'}
+          </div>
+          <div>
+            Thick: {(volume.dicomMeta?.sliceThicknessMm || calibrationMm).toFixed(2)} mm
+          </div>
+          <div>
+            Loc: {((planeMeta.sliceVal + 1) * (volume.voxelSpacingMm[2] || calibrationMm)).toFixed(2)} mm
+          </div>
         </div>
 
         {/* Top-Right Clinical Series Metadata */}
-        <div className="absolute top-2 right-6 text-[9.5px] font-mono text-slate-400 text-right leading-tight pointer-events-none space-y-0.5">
-          <div>CT CRANIO-TMJ</div>
+        <div className="absolute top-2 right-6 text-[9.5px] font-mono text-slate-400 text-right leading-tight pointer-events-none space-y-0.5 max-w-[160px] truncate">
+          <div className="truncate">
+            {volume.dicomMeta?.isCustomDicom
+              ? volume.dicomMeta.seriesDescription
+              : 'CT CRANIO-TMJ'}
+          </div>
           <div>{planeMeta.seriesName}</div>
         </div>
 
@@ -613,12 +658,14 @@ export const MprSliceViewer: React.FC<MprSliceViewerProps> = ({
             </div>
           ) : (
             <div>
-              XYZ:[{sx},{sy},{sz}] ·{' '}
-              <strong className="text-[#00E5FF]">{volume.huData[idx3D(sx, sy, sz)]} HU</strong>
+              XYZ:[{safeSx},{safeSy},{safeSz}] ·{' '}
+              <strong className="text-[#00E5FF]">
+                {volume.huData[idx3D(safeSx, safeSy, safeSz)]} HU
+              </strong>
             </div>
           )}
           <div className="text-slate-400">
-            Img: {planeMeta.sliceVal + 1} di {planeMeta.maxSlice + 1}
+            Img: {planeMeta.sliceVal + 1} / {planeMeta.maxSlice + 1}
           </div>
         </div>
 

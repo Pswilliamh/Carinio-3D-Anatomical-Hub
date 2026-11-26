@@ -26,6 +26,57 @@ export interface ComparisonMetrics {
   remainingScatterVoxels: number;
 }
 
+export type SegmentationLayerId = 1 | 2 | 3 | 4;
+
+export interface SegmentationLayerInfo {
+  id: SegmentationLayerId;
+  key: 'cyan' | 'green' | 'yellow' | 'magenta';
+  nameEn: string;
+  nameId: string;
+  hex: string;
+  rgb: [number, number, number];
+  rgbNorm: [number, number, number];
+}
+
+export const SEGMENTATION_LAYER_META: Record<SegmentationLayerId, SegmentationLayerInfo> = {
+  1: {
+    id: 1,
+    key: 'cyan',
+    nameEn: 'Cyan · Mandible & Bone',
+    nameId: 'Cyan · Mandibula & Tulang',
+    hex: '#00E5FF',
+    rgb: [0, 229, 255],
+    rgbNorm: [0.0, 0.9, 1.0],
+  },
+  2: {
+    id: 2,
+    key: 'green',
+    nameEn: 'Green · Cranium & Fossa',
+    nameId: 'Hijau · Kranium & Fosa TMJ',
+    hex: '#10E882',
+    rgb: [16, 232, 130],
+    rgbNorm: [0.06, 0.91, 0.51],
+  },
+  3: {
+    id: 3,
+    key: 'yellow',
+    nameEn: 'Yellow · Dentition / Condyle',
+    nameId: 'Kuning · Gigi / Kondilus',
+    hex: '#FFD700',
+    rgb: [255, 215, 0],
+    rgbNorm: [1.0, 0.84, 0.0],
+  },
+  4: {
+    id: 4,
+    key: 'magenta',
+    nameEn: 'Magenta · Scatter / Target',
+    nameId: 'Magenta · Hamburan / Target',
+    hex: '#F43FBC',
+    rgb: [244, 63, 188],
+    rgbNorm: [0.96, 0.25, 0.74],
+  },
+};
+
 export interface GeneratedMeshData {
   positions: Float32Array;
   normals: Float32Array;
@@ -412,6 +463,8 @@ export function computeActiveSegmentationMask(
   maxHU: number,
   erasedVoxels: Uint8Array,
   regionFilterMask: Uint8Array | null,
+  layerMap?: Uint8Array | null,
+  layerVisibility?: Record<SegmentationLayerId, boolean>,
 ): Uint8Array {
   const total = record.huData.length;
   const out = new Uint8Array(total);
@@ -420,10 +473,54 @@ export function computeActiveSegmentationMask(
     if (regionFilterMask && regionFilterMask[i] === 0) continue;
     const hu = record.huData[i];
     if (hu >= minHU && hu <= maxHU) {
+      if (layerMap && layerVisibility) {
+        const lid = (layerMap[i] || 1) as SegmentationLayerId;
+        if (!layerVisibility[lid]) continue;
+      }
       out[i] = 1;
     }
   }
   return out;
+}
+
+/**
+ * Automatically classifies active segmented voxels into 4 visually separated color layers:
+ * 1 = Cyan (Mandible / Primary Bone), 2 = Green (Cranium / Temporal Glenoid Fossa),
+ * 3 = Yellow (Enamel / Dental Arch / High-Density Condyle), 4 = Magenta (Metallic Scatter / Target Region)
+ */
+export function autoSeparateAnatomicalLayers(
+  record: CachedVolumeRecord,
+  activeMask: Uint8Array,
+): Uint8Array {
+  const total = record.huData.length;
+  const layers = new Uint8Array(total);
+  const [nx, ny, nz] = record.dims;
+  const strideY = nx;
+  const strideZ = nx * ny;
+
+  for (let i = 0; i < total; i++) {
+    if (activeMask[i] === 0) continue;
+    const hu = record.huData[i];
+
+    if (record.scatterMask[i] === 1 || hu >= 2600) {
+      layers[i] = 4; // Magenta: Metallic scatter / target region
+    } else if (hu >= 1950) {
+      layers[i] = 3; // Yellow: Dental enamel / crown arch
+    } else if (record.dicomMeta?.isCustomDicom) {
+      // For imported DICOM volumes, separate upper cranial half (Green) vs lower mandibular half (Cyan)
+      const z = Math.floor(i / strideZ);
+      layers[i] = z >= Math.floor(nz * 0.52) ? 2 : 1;
+    } else if (record.mandibleComponentMask[i] === 1) {
+      const z = Math.floor(i / strideZ);
+      const rem = i % strideZ;
+      const y = Math.floor(rem / strideY);
+      // Highlight superior mandibular condyle dome in Yellow when separated or keep mandible Cyan
+      layers[i] = z >= 20 && y <= 17 ? 3 : 1;
+    } else {
+      layers[i] = 2; // Green: Cranial vault, maxilla, and temporal glenoid fossa
+    }
+  }
+  return layers;
 }
 
 export function runSeedRegionGrowing(
@@ -437,6 +534,7 @@ export function runSeedRegionGrowing(
   const total = nx * ny * nz;
   const visited = new Uint8Array(total);
 
+  const isCustomVolume = Boolean(record.dicomMeta?.isCustomDicom);
   let startIdx = -1;
   let bestDist = 9999;
   for (let dz = -5; dz <= 5; dz++) {
@@ -447,7 +545,9 @@ export function runSeedRegionGrowing(
         const z = seedZ + dz;
         if (x < 0 || x >= nx || y < 0 || y >= ny || z < 0 || z >= nz) continue;
         const idx = idx3D(x, y, z, nx, ny);
-        if (activeMask[idx] === 1 && record.mandibleComponentMask[idx] === 1) {
+        const validSeed =
+          activeMask[idx] === 1 && (isCustomVolume || record.mandibleComponentMask[idx] === 1);
+        if (validSeed) {
           const d = dx * dx + dy * dy + dz * dz;
           if (d < bestDist) {
             bestDist = d;
@@ -459,10 +559,9 @@ export function runSeedRegionGrowing(
   }
 
   if (startIdx === -1) {
-    // Seed all connected mandible components so both left and right ramus/condyles isolate cleanly
     let count = 0;
     for (let i = 0; i < total; i++) {
-      if (record.mandibleComponentMask[i] === 1 && activeMask[i] === 1) {
+      if ((isCustomVolume || record.mandibleComponentMask[i] === 1) && activeMask[i] === 1) {
         visited[i] = 1;
         count++;
       }
@@ -504,7 +603,7 @@ export function runSeedRegionGrowing(
         ni !== -1 &&
         visited[ni] === 0 &&
         activeMask[ni] === 1 &&
-        (record.mandibleComponentMask[ni] === 1 || record.scatterMask[ni] === 1)
+        (isCustomVolume || record.mandibleComponentMask[ni] === 1 || record.scatterMask[ni] === 1)
       ) {
         visited[ni] = 1;
         queue[tail++] = ni;
@@ -578,6 +677,25 @@ export function removeFloatingIslands(
 }
 
 export function detectAnatomicalLandmarks(record: CachedVolumeRecord): AnatomicalLandmark[] {
+  if (record.dicomMeta?.isCustomDicom) {
+    const [nx, ny, nz] = record.dims;
+    const cx = Math.floor(nx / 2);
+    const cy = Math.floor(ny / 2);
+    const cz = Math.floor(nz / 2);
+    const centerHu = record.huData[idx3D(cx, cy, cz, nx, ny)] ?? 0;
+    return [
+      {
+        id: 'lm_dicom_isocenter',
+        code: 'ISO-CT',
+        nameEn: 'Imported DICOM Volume Isocenter',
+        nameId: 'Isosenter Volume DICOM Impor',
+        voxel: [cx, cy, cz],
+        huValue: centerHu,
+        clinicalNoteEn: `Series: ${record.dicomMeta.seriesDescription} (${record.dicomMeta.originalMatrix})`,
+        clinicalNoteId: `Seri: ${record.dicomMeta.seriesDescription} (${record.dicomMeta.originalMatrix})`,
+      },
+    ];
+  }
   if (record.id === 'full_cranium_arch') {
     return [
       {
@@ -749,6 +867,8 @@ export function extractSurfaceMeshFromMask(
   record: CachedVolumeRecord,
   smoothingIterations = 3,
   highlightDiff = false,
+  layerMap?: Uint8Array | null,
+  colorByLayers = false,
 ): GeneratedMeshData {
   const t0 = performance.now();
   const [nx, ny, nz] = record.dims;
@@ -857,6 +977,8 @@ export function extractSurfaceMeshFromMask(
     };
   }
 
+  const voxelWorldScale = 20 / Math.max(nx, ny, nz);
+
   function getOrCreateVertex(
     cx: number,
     cy: number,
@@ -872,9 +994,9 @@ export function extractSurfaceMeshFromMask(
       cornerToVert[cIdx] = vIdx;
       const iso = sampleCornerIsoOffset(cx, cy, cz);
       vertCoords.push(
-        (cx + iso.ox - nx * 0.5) * 0.5,
-        (cz + iso.oz - nz * 0.5) * 0.5,
-        (cy + iso.oy - ny * 0.5) * 0.5,
+        (cx + iso.ox - nx * 0.5) * voxelWorldScale,
+        (cz + iso.oz - nz * 0.5) * voxelWorldScale,
+        (cy + iso.oy - ny * 0.5) * voxelWorldScale,
       );
       vertColorValues.push(
         Math.min(1, r * iso.ao),
@@ -940,10 +1062,16 @@ export function extractSurfaceMeshFromMask(
             g = 0.78;
             b = 0.22;
           }
+        } else if (colorByLayers && layerMap) {
+          const lid = (layerMap[i] || 1) as SegmentationLayerId;
+          const layerColor = SEGMENTATION_LAYER_META[lid].rgbNorm;
+          r = layerColor[0];
+          g = layerColor[1];
+          b = layerColor[2];
         } else if (record.scatterMask[i] === 1) {
-          r = 0.25;
-          g = 0.92;
-          b = 1.0;
+          r = 0.96;
+          g = 0.25;
+          b = 0.74;
         }
 
         if (x === 0 || mask[i - 1] === 0) {

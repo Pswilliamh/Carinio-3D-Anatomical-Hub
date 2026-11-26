@@ -8,6 +8,21 @@ const DB_VERSION = 1;
 const VOLUME_STORE = 'volumetric_datasets';
 const AUDIT_STORE = 'local_audit_logs';
 
+export interface DicomMetadata {
+  modality: string;
+  seriesDescription: string;
+  studyDescription: string;
+  originalMatrix: string;
+  sliceCount: number;
+  pixelSpacingMm: [number, number];
+  sliceThicknessMm: number;
+  huMin: number;
+  huMax: number;
+  recommendedWindowWidth: number;
+  recommendedWindowLevel: number;
+  isCustomDicom: boolean;
+}
+
 export interface CachedVolumeRecord {
   id: string;
   name: string;
@@ -19,6 +34,7 @@ export interface CachedVolumeRecord {
   mandibleComponentMask: Uint8Array;
   encryptedDigest: string;
   cachedAt: number;
+  dicomMeta?: DicomMetadata;
 }
 
 export interface LocalAuditRecord {

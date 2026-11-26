@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
   collection,
@@ -33,6 +33,8 @@ import {
   EyeOff,
   CheckCircle2,
   ShieldAlert,
+  Layers,
+  Paintbrush,
 } from 'lucide-react';
 import {
   auth,
@@ -55,14 +57,16 @@ import {
 } from './services/indexedDbCache';
 import {
   AnatomicalLandmark,
+  autoSeparateAnatomicalLayers,
   computeActiveSegmentationMask,
   computeComparisonMetrics,
   detectAnatomicalLandmarks,
   extractSurfaceMeshFromMask,
   loadOrGenerateDataset,
-  parseUploadedVolumeFile,
   removeFloatingIslands,
   runSeedRegionGrowing,
+  SEGMENTATION_LAYER_META,
+  SegmentationLayerId,
 } from './services/volumeGenerator';
 import {
   exportMeshToOBJ,
@@ -73,19 +77,29 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { SafetyDisclaimerModal } from './components/SafetyDisclaimerModal';
 import { KarinaLandingSection } from './components/KarinaLandingSection';
 import { MprSliceViewer, WorkstationTool } from './components/MprSliceViewer';
-import { INITIAL_TEETH_SET, ThreeViewport, ToothDescriptor } from './components/ThreeViewport';
+import {
+  BiteAlignmentParams,
+  DEFAULT_BITE_PARAMS,
+  INITIAL_TEETH_SET,
+  ThreeViewport,
+  ToothDescriptor,
+} from './components/ThreeViewport';
+import { TeethAlignmentOdontogram } from './components/TeethAlignmentOdontogram';
 import { GuidedLabPanel } from './components/GuidedLabPanel';
 import { AiGlossaryAssistant } from './components/AiGlossaryAssistant';
 import { AuditPerformanceDashboard } from './components/AuditPerformanceDashboard';
+import { DicomImportModal } from './components/DicomImportModal';
+import { DicomImportResult } from './services/dicomImporter';
+import { ImplantDesignLab } from './components/ImplantDesignLab';
 
-type ActiveSection = 'overview' | 'workstation' | 'guided_lab' | 'glossary' | 'audit';
+type ActiveSection = 'overview' | 'workstation' | 'implant_design' | 'glossary' | 'audit';
 
 export default function App() {
   // Theme, Language, and Safety Gate State
   const [darkMode, setDarkMode] = useState(true);
   const [language, setLanguage] = useState<Language>('en');
   const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
-  const [activeSection, setActiveSection] = useState<ActiveSection>('workstation');
+  const [activeSection, setActiveSection] = useState<ActiveSection>('overview');
 
   // Firebase Auth & RBAC Profile State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -108,9 +122,18 @@ export default function App() {
   const [minHU, setMinHU] = useState(360);
   const [maxHU, setMaxHU] = useState(3050);
 
-  // Artifact Cleanup & Segmentation Mask Buffers
+  // Artifact Cleanup & 4-Color Multi-Layer Segmentation Mask Buffers
   const [erasedVoxels, setErasedVoxels] = useState<Uint8Array>(() => new Uint8Array(40 * 40 * 40));
   const [regionFilterMask, setRegionFilterMask] = useState<Uint8Array | null>(null);
+  const [layerMap, setLayerMap] = useState<Uint8Array>(() => new Uint8Array(40 * 40 * 40).fill(1));
+  const [activePaintLayer, setActivePaintLayer] = useState<SegmentationLayerId>(2);
+  const [layerVisibility, setLayerVisibility] = useState<Record<SegmentationLayerId, boolean>>({
+    1: true,
+    2: true,
+    3: true,
+    4: true,
+  });
+  const [colorByLayers, setColorByLayers] = useState(false);
   const [scatterCleanedCount, setScatterCleanedCount] = useState(0);
   const [islandsRemovedCount, setIslandsRemovedCount] = useState(0);
   const [activeTool, setActiveTool] = useState<WorkstationTool>('navigate');
@@ -125,14 +148,17 @@ export default function App() {
   const [compareMode, setCompareMode] = useState(false);
   const [nerveOpacity, setNerveOpacity] = useState(0.92);
   const [teeth, setTeeth] = useState<ToothDescriptor[]>(INITIAL_TEETH_SET);
+  const [selectedToothId, setSelectedToothId] = useState<string | null>('t_46');
+  const [biteParams, setBiteParams] = useState<BiteAlignmentParams>(DEFAULT_BITE_PARAMS);
+  const [highlightReplacedCyan, setHighlightReplacedCyan] = useState(true);
   const [showTitaniumImplant, setShowTitaniumImplant] = useState(false);
   const [showLaserScanner, setShowLaserScanner] = useState(false);
   const [xyzOffsetMm, setXyzOffsetMm] = useState<[number, number, number]>([0, 0, 0]);
 
-  // Guided Lab & Audit Logs State
+  // Guided Lab, DICOM Modal & Audit Logs State
   const [activeLabStep, setActiveLabStep] = useState(0);
+  const [showDicomModal, setShowDicomModal] = useState(false);
   const [auditLogs, setAuditLogs] = useState<LocalAuditRecord[]>([]);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const t = UI_TEXT[language];
 
@@ -160,11 +186,22 @@ export default function App() {
       if (!mounted) return;
       setVolume(record);
       setCacheLatencyMs(latencyMs);
-      setErasedVoxels(new Uint8Array(record.huData.length));
+      setSlices([
+        Math.floor(record.dims[0] / 2),
+        Math.floor(record.dims[1] / 2),
+        Math.floor(record.dims[2] / 2),
+      ]);
+      const emptyErased = new Uint8Array(record.huData.length);
+      setErasedVoxels(emptyErased);
       setRegionFilterMask(null);
+      const initialMask = computeActiveSegmentationMask(record, 360, 3050, emptyErased, null);
+      setLayerMap(autoSeparateAnatomicalLayers(record, initialMask));
+      setLayerVisibility({ 1: true, 2: true, 3: true, 4: true });
       setScatterCleanedCount(0);
       setIslandsRemovedCount(0);
       setLandmarks(detectAnatomicalLandmarks(record));
+      setTeeth(INITIAL_TEETH_SET);
+      setNerveOpacity(0.92);
     });
     return () => {
       mounted = false;
@@ -336,7 +373,7 @@ export default function App() {
     return { width: 2000, level: 400 };
   }, [windowPreset]);
 
-  // Active Binary Segmentation Mask
+  // Active Binary Segmentation Mask (respects 4-color layer visibility toggles)
   const activeMask = useMemo(() => {
     if (!volume) return new Uint8Array(40 * 40 * 40);
     return computeActiveSegmentationMask(
@@ -345,8 +382,30 @@ export default function App() {
       maxHU,
       erasedVoxels,
       regionFilterMask,
+      layerMap,
+      layerVisibility,
     );
-  }, [volume, minHU, maxHU, erasedVoxels, regionFilterMask]);
+  }, [volume, minHU, maxHU, erasedVoxels, regionFilterMask, layerMap, layerVisibility]);
+
+  // Voxel counts per segmentation color layer (Cyan, Green, Yellow, Magenta)
+  const layerVoxelCounts = useMemo(() => {
+    const counts: Record<SegmentationLayerId, number> = { 1: 0, 2: 0, 3: 0, 4: 0 };
+    if (!volume) return counts;
+    const rawVisibleMask = computeActiveSegmentationMask(
+      volume,
+      minHU,
+      maxHU,
+      erasedVoxels,
+      regionFilterMask,
+    );
+    for (let i = 0; i < rawVisibleMask.length; i++) {
+      if (rawVisibleMask[i] === 1) {
+        const lid = (layerMap[i] >= 1 && layerMap[i] <= 4 ? layerMap[i] : 1) as SegmentationLayerId;
+        counts[lid]++;
+      }
+    }
+    return counts;
+  }, [volume, minHU, maxHU, erasedVoxels, regionFilterMask, layerMap]);
 
   // Real-Time Evaluation Metrics vs Expert Reference Mesh
   const comparisonMetrics = useMemo(() => {
@@ -381,8 +440,10 @@ export default function App() {
       volume,
       smoothingIterations,
       compareMode,
+      layerMap,
+      colorByLayers,
     );
-  }, [activeMask, volume, smoothingIterations, compareMode]);
+  }, [activeMask, volume, smoothingIterations, compareMode, layerMap, colorByLayers]);
 
   // Expert Master Reference Mesh for 3D Overlay Comparison
   const referenceMeshData = useMemo(() => {
@@ -415,6 +476,45 @@ export default function App() {
       }
       return next;
     });
+  }, []);
+
+  const handlePaintLayerVoxels = useCallback(
+    (indices: number[], layerId: SegmentationLayerId) => {
+      setLayerMap((prev) => {
+        const next = prev.slice();
+        for (const idx of indices) {
+          if (idx >= 0 && idx < next.length) {
+            next[idx] = layerId;
+          }
+        }
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleAutoSeparateLayers = useCallback(() => {
+    if (!volume) return;
+    const baseMask = computeActiveSegmentationMask(
+      volume,
+      minHU,
+      maxHU,
+      erasedVoxels,
+      regionFilterMask,
+    );
+    const separated = autoSeparateAnatomicalLayers(volume, baseMask);
+    setLayerMap(separated);
+    setLayerVisibility({ 1: true, 2: true, 3: true, 4: true });
+    setColorByLayers(true);
+    showToast(
+      language === 'en'
+        ? 'Separated volume into 4 color layers: Cyan (Mandible), Green (Cranium/Fossa), Yellow (Teeth/Condyle), Magenta (Scatter/Implant).'
+        : 'Volume dipisahkan menjadi 4 warna lapisan: Cyan (Mandibula), Hijau (Kranium/Fosa), Kuning (Gigi/Kondilus), Magenta (Hamburan/Implan).',
+    );
+  }, [volume, minHU, maxHU, erasedVoxels, regionFilterMask, language, showToast]);
+
+  const handleToggleLayerVisibility = useCallback((layerId: SegmentationLayerId) => {
+    setLayerVisibility((prev) => ({ ...prev, [layerId]: !prev[layerId] }));
   }, []);
 
   const handleSeedRegionGrow = useCallback(
@@ -492,8 +592,12 @@ export default function App() {
 
   const handleResetRawVolume = useCallback(() => {
     if (!volume) return;
-    setErasedVoxels(new Uint8Array(volume.huData.length));
+    const emptyErased = new Uint8Array(volume.huData.length);
+    setErasedVoxels(emptyErased);
     setRegionFilterMask(null);
+    const rawMask = computeActiveSegmentationMask(volume, 360, 3050, emptyErased, null);
+    setLayerMap(autoSeparateAnatomicalLayers(volume, rawMask));
+    setLayerVisibility({ 1: true, 2: true, 3: true, 4: true });
     setScatterCleanedCount(0);
     setIslandsRemovedCount(0);
     setMinHU(360);
@@ -505,17 +609,140 @@ export default function App() {
     );
   }, [volume, language, showToast]);
 
-  const handleToggleTooth = useCallback((toothId: string) => {
+  const handleSelectOrToggleTooth3D = useCallback((toothId: string) => {
+    setSelectedToothId(toothId);
+  }, []);
+
+  const handleToggleToothVisibility = useCallback((toothId: string) => {
     setTeeth((prev) =>
       prev.map((tooth) =>
-        tooth.id === toothId ? { ...tooth, visible: !tooth.visible } : tooth,
+        tooth.id === toothId
+          ? {
+              ...tooth,
+              visible: !tooth.visible,
+              status: !tooth.visible
+                ? tooth.status === 'hidden'
+                  ? 'natural'
+                  : tooth.status
+                : 'hidden',
+            }
+          : tooth,
       ),
     );
   }, []);
 
   const handleSetAllTeethVisibility = useCallback((visible: boolean) => {
-    setTeeth((prev) => prev.map((tooth) => ({ ...tooth, visible })));
+    setTeeth((prev) =>
+      prev.map((tooth) => ({
+        ...tooth,
+        visible,
+        status: visible ? (tooth.status === 'hidden' ? 'natural' : tooth.status) : 'hidden',
+      })),
+    );
   }, []);
+
+  const handleUpdateToothTransform = useCallback(
+    (
+      toothId: string,
+      patch: Partial<
+        Pick<
+          ToothDescriptor,
+          'offsetX' | 'offsetY' | 'offsetZ' | 'tiltDeg' | 'rotYDeg' | 'scale' | 'status' | 'visible'
+        >
+      >,
+    ) => {
+      setTeeth((prev) =>
+        prev.map((tooth) => (tooth.id === toothId ? { ...tooth, ...patch } : tooth)),
+      );
+    },
+    [],
+  );
+
+  const handleResetToothAlignment = useCallback((toothId: string) => {
+    setTeeth((prev) =>
+      prev.map((tooth) =>
+        tooth.id === toothId
+          ? {
+              ...tooth,
+              offsetX: 0,
+              offsetY: 0,
+              offsetZ: 0,
+              tiltDeg: 0,
+              rotYDeg: 0,
+              scale: 1,
+            }
+          : tooth,
+      ),
+    );
+  }, []);
+
+  // Erase metallic crown scatter artifacts around a tooth in the CT volume & seat a clean virtual anatomical tooth
+  const handleReplaceScatterCrownWithTooth = useCallback(
+    (toothId: string) => {
+      const targetTooth = teeth.find((item) => item.id === toothId);
+      if (!targetTooth) return;
+
+      let clearedCount = 0;
+      if (volume) {
+        const [nx, ny, nz] = volume.dims;
+        const voxelScale = 20 / Math.max(nx, ny, nz);
+        // Map tooth 3D scene coords back into CT voxel grid space
+        const tx = Math.round(targetTooth.position[0] / voxelScale + nx * 0.5);
+        const ty = Math.round(targetTooth.position[2] / voxelScale + ny * 0.5);
+        const tz = Math.round(targetTooth.position[1] / voxelScale + nz * 0.5);
+
+        setErasedVoxels((prev) => {
+          const next = prev.slice();
+          for (let z = 0; z < nz; z++) {
+            for (let y = 0; y < ny; y++) {
+              for (let x = 0; x < nx; x++) {
+                const idx = z * nx * ny + y * nx + x;
+                const dist = Math.hypot(x - tx, y - ty, z - tz);
+                // Erase scatter voxels in the crown's vicinity (or any beam-hardening scatter on the tooth's axial slab)
+                const isNearbyScatter =
+                  volume.scatterMask[idx] === 1 && (dist <= 11 || Math.abs(z - tz) <= 4);
+                const isLocalHyperdense = volume.huData[idx] >= 2550 && dist <= 4.2;
+                if ((isNearbyScatter || isLocalHyperdense) && next[idx] === 0) {
+                  next[idx] = 1;
+                  clearedCount++;
+                }
+              }
+            }
+          }
+          return next;
+        });
+
+        if (clearedCount > 0) {
+          setScatterCleanedCount((c) => c + clearedCount);
+        }
+      }
+
+      setTeeth((prev) =>
+        prev.map((tooth) =>
+          tooth.id === toothId
+            ? {
+                ...tooth,
+                visible: true,
+                status: 'replaced',
+              }
+            : tooth,
+        ),
+      );
+      setSelectedToothId(toothId);
+
+      recordAuditAction(
+        'SCATTER_CLEANUP',
+        'Bite Alignment & Tooth Replacement',
+        `Erased ${clearedCount} crown scatter voxels around ${targetTooth.fdiNumber} (${targetTooth.nameEn}) and seated virtual anatomical replacement tooth.`,
+      );
+      showToast(
+        language === 'en'
+          ? `Cleaned ${clearedCount} scatter voxels around ${targetTooth.fdiNumber} and seated a realistic virtual tooth.`
+          : `Membersihkan ${clearedCount} voksel hamburan di sekitar ${targetTooth.fdiNumber} dan memasang gigi pengganti virtual realistis.`,
+      );
+    },
+    [teeth, volume, language, recordAuditAction, showToast],
+  );
 
   const handleCompleteModule = useCallback(
     async (moduleId: string) => {
@@ -684,28 +911,57 @@ export default function App() {
     recordAuditAction,
   ]);
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    try {
-      const customRecord = await parseUploadedVolumeFile(file);
-      setVolume(customRecord);
-      setErasedVoxels(new Uint8Array(customRecord.huData.length));
+  const handleDicomImportComplete = useCallback(
+    (result: DicomImportResult) => {
+      const { record, meta } = result;
+      setVolume(record);
+      setSlices([
+        Math.floor(record.dims[0] / 2),
+        Math.floor(record.dims[1] / 2),
+        Math.floor(record.dims[2] / 2),
+      ]);
+      const emptyErased = new Uint8Array(record.huData.length);
+      setErasedVoxels(emptyErased);
       setRegionFilterMask(null);
-      setLandmarks(detectAnatomicalLandmarks(customRecord));
+      setScatterCleanedCount(0);
+      setIslandsRemovedCount(0);
+      setLandmarks(detectAnatomicalLandmarks(record));
+
+      // Auto-select sensible Hounsfield threshold range based on imported DICOM HU distribution
+      let nextMin = 320;
+      let nextMax = 2400;
+      if (meta.huMax >= 400) {
+        nextMin = 320;
+        nextMax = Math.min(3150, Math.max(2400, meta.huMax));
+      } else {
+        const span = Math.max(100, meta.huMax - meta.huMin);
+        nextMin = Math.round(meta.huMin + span * 0.45);
+        nextMax = Math.min(3150, meta.huMax);
+      }
+      setMinHU(nextMin);
+      setMaxHU(nextMax);
+      const dicomMask = computeActiveSegmentationMask(record, nextMin, nextMax, emptyErased, null);
+      setLayerMap(autoSeparateAnatomicalLayers(record, dicomMask));
+      setLayerVisibility({ 1: true, 2: true, 3: true, 4: true });
+
+      // Hide built-in synthetic phantom overlays so the real imported DICOM anatomy renders cleanly
+      setTeeth((prev) => prev.map((item) => ({ ...item, visible: false })));
+      setNerveOpacity(0);
+      setShowTitaniumImplant(false);
+
+      recordAuditAction(
+        'THRESHOLD_UPDATE',
+        'DICOM Dataset Import',
+        `Imported ${meta.modality} DICOM series "${meta.seriesDescription}" (${meta.originalMatrix}, ${meta.sliceCount} slices).`,
+      );
       showToast(
         language === 'en'
-          ? `Loaded local volumetric dataset: ${file.name}`
-          : `Berhasil memuat file volumetrik lokal: ${file.name}`,
+          ? `Loaded DICOM dataset: ${meta.seriesDescription} (${meta.sliceCount} slices, ${record.dims.join('×')})`
+          : `Dataset DICOM dimuat: ${meta.seriesDescription} (${meta.sliceCount} irisan, ${record.dims.join('×')})`,
       );
-    } catch (err) {
-      showToast(
-        language === 'en'
-          ? 'Could not parse file. Ensure valid .nii, .dcm, or .json format.'
-          : 'Gagal membaca file. Pastikan format .nii, .dcm, atau .json valid.',
-      );
-    }
-  };
+    },
+    [language, recordAuditAction, showToast],
+  );
 
   const handleGoogleSignIn = async () => {
     try {
@@ -785,18 +1041,18 @@ export default function App() {
               {t.navWorkstation}
             </a>
             <a
-              href="#guided-lab"
+              href="#implant-design"
               onClick={(e) => {
                 e.preventDefault();
-                setActiveSection('guided_lab');
+                setActiveSection('implant_design');
               }}
               className={`hover:text-slate-900 dark:hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-                activeSection === 'guided_lab'
+                activeSection === 'implant_design'
                   ? 'text-[#0088AA] dark:text-[#00E5FF] underline underline-offset-8'
                   : ''
               }`}
             >
-              {t.navGuidedLab}
+              {t.navImplantDesign}
             </a>
             <a
               href="#glossary"
@@ -864,7 +1120,7 @@ export default function App() {
             >
               <option value="overview">{t.navOverview}</option>
               <option value="workstation">{t.navWorkstation}</option>
-              <option value="guided_lab">{t.navGuidedLab}</option>
+              <option value="implant_design">{t.navImplantDesign}</option>
               <option value="glossary">{t.navGlossaryAi}</option>
               <option value="audit">{t.navAuditDashboard}</option>
             </select>
@@ -915,12 +1171,13 @@ export default function App() {
               userRole={userRole}
               onSignIn={handleGoogleSignIn}
               onEnterWorkstation={() => setActiveSection('workstation')}
-              onEnterGuidedLab={() => setActiveSection('guided_lab')}
+              onEnterImplantDesign={() => setActiveSection('implant_design')}
               onEnterGlossary={() => setActiveSection('glossary')}
+              onNotify={showToast}
             />
           )}
 
-          {(activeSection === 'workstation' || activeSection === 'guided_lab') && volume && (
+          {activeSection === 'workstation' && volume && (
             <div className="space-y-6">
               {/* Top Workstation Controls Bar: Dataset Selector, Local Import, Window/Level, Calibration Scale & CAD Exports */}
               <div className="bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-wrap items-center justify-between gap-4">
@@ -944,21 +1201,22 @@ export default function App() {
                     </select>
                   </div>
 
-                  {/* Local NIfTI / DICOM / JSON Import */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".nii,.dcm,.json"
-                    onChange={handleFileUpload}
-                    className="hidden"
-                  />
+                  {/* DICOM Series / Folder / .ZIP / .NII Importer Modal Trigger */}
                   <button
-                    onClick={() => fileInputRef.current?.click()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-[#0A192F] border border-slate-300 dark:border-slate-700 hover:border-[#00E5FF] text-xs font-medium text-slate-800 dark:text-slate-200 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                    onClick={() => setShowDicomModal(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-[#00E5FF]/15 dark:bg-[#00E5FF]/15 border border-[#00E5FF] hover:bg-[#00E5FF]/25 text-xs font-semibold text-slate-900 dark:text-[#00E5FF] transition-colors cursor-pointer whitespace-nowrap shrink-0"
                   >
                     <Upload className="w-3.5 h-3.5 text-[#0088AA] dark:text-[#00E5FF]" />
                     <span>{t.uploadDicomNifti}</span>
                   </button>
+
+                  {volume.dicomMeta?.isCustomDicom && (
+                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-mono text-emerald-700 dark:text-emerald-300">
+                      <span>
+                        {volume.dicomMeta.modality}: {volume.dicomMeta.originalMatrix}
+                      </span>
+                    </span>
+                  )}
 
                   {/* Window / Level Presets */}
                   <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-[#0A192F] border border-slate-200 dark:border-slate-800">
@@ -1077,6 +1335,8 @@ export default function App() {
                       language={language}
                       volume={volume}
                       activeMask={activeMask}
+                      layerMap={layerMap}
+                      activePaintLayer={activePaintLayer}
                       slices={slices}
                       windowWidth={windowConfig.width}
                       windowLevel={windowConfig.level}
@@ -1087,6 +1347,7 @@ export default function App() {
                       landmarks={landmarks}
                       onSliceChange={setSlices}
                       onEraseVoxels={handleEraseVoxels}
+                      onPaintLayerVoxels={handlePaintLayerVoxels}
                       onSeedRegionGrow={handleSeedRegionGrow}
                       onRecordMeasurement={(distMm, planeLabel) => {
                         recordAuditAction(
@@ -1104,6 +1365,8 @@ export default function App() {
                       language={language}
                       volume={volume}
                       activeMask={activeMask}
+                      layerMap={layerMap}
+                      activePaintLayer={activePaintLayer}
                       slices={slices}
                       windowWidth={windowConfig.width}
                       windowLevel={windowConfig.level}
@@ -1114,6 +1377,7 @@ export default function App() {
                       landmarks={landmarks}
                       onSliceChange={setSlices}
                       onEraseVoxels={handleEraseVoxels}
+                      onPaintLayerVoxels={handlePaintLayerVoxels}
                       onSeedRegionGrow={handleSeedRegionGrow}
                       onRecordMeasurement={(distMm, planeLabel) => {
                         recordAuditAction(
@@ -1131,6 +1395,8 @@ export default function App() {
                       language={language}
                       volume={volume}
                       activeMask={activeMask}
+                      layerMap={layerMap}
+                      activePaintLayer={activePaintLayer}
                       slices={slices}
                       windowWidth={windowConfig.width}
                       windowLevel={windowConfig.level}
@@ -1141,6 +1407,7 @@ export default function App() {
                       landmarks={landmarks}
                       onSliceChange={setSlices}
                       onEraseVoxels={handleEraseVoxels}
+                      onPaintLayerVoxels={handlePaintLayerVoxels}
                       onSeedRegionGrow={handleSeedRegionGrow}
                       onRecordMeasurement={(distMm, planeLabel) => {
                         recordAuditAction(
@@ -1162,97 +1429,42 @@ export default function App() {
                       compareMode={compareMode}
                       nerveOpacity={nerveOpacity}
                       teeth={teeth}
+                      selectedToothId={selectedToothId}
+                      biteParams={biteParams}
+                      highlightReplacedCyan={highlightReplacedCyan}
                       showTitaniumImplant={showTitaniumImplant}
                       showLaserScanner={showLaserScanner}
                       slices={slices}
+                      volumeDims={volume.dims}
+                      dicomSeriesLabel={
+                        volume.dicomMeta?.isCustomDicom
+                          ? `${volume.dicomMeta.modality} · ${volume.dicomMeta.seriesDescription}`
+                          : null
+                      }
                       xyzOffsetMm={xyzOffsetMm}
-                      onToggleTooth={handleToggleTooth}
+                      colorByLayers={colorByLayers}
+                      onToggleColorByLayers={setColorByLayers}
+                      onToggleTooth={handleSelectOrToggleTooth3D}
                       onChangeXyzOffset={setXyzOffsetMm}
                     />
                   </div>
 
-                  {/* Interactive Upper (Maxillofacial) & Lower (Mandibular) Dentition Odontogram Bar */}
-                  <div className="bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div>
-                        <span className="text-xs font-mono text-[#0088AA] dark:text-[#00E5FF] font-semibold">
-                          ODONTOGRAM & SELECTIVE TOOTH EXTRACTION SIMULATOR
-                        </span>
-                        <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                          {t.teethManagerTitle}
-                        </h3>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleSetAllTeethVisibility(true)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium bg-slate-100 dark:bg-[#0A192F] hover:border-[#00E5FF] border border-slate-200 dark:border-slate-700 cursor-pointer"
-                        >
-                          <Eye className="w-3.5 h-3.5 text-[#00E5FF]" />
-                          <span>{t.showAllTeeth}</span>
-                        </button>
-                        <button
-                          onClick={() => handleSetAllTeethVisibility(false)}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium bg-slate-100 dark:bg-[#0A192F] hover:border-[#00E5FF] border border-slate-200 dark:border-slate-700 cursor-pointer"
-                        >
-                          <EyeOff className="w-3.5 h-3.5 text-slate-400" />
-                          <span>{t.hideAllTeeth}</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                      {/* Upper Maxillofacial Teeth */}
-                      <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0A192F] border border-slate-200 dark:border-slate-800 space-y-2">
-                        <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                          {t.upperTeethLabel}
-                        </p>
-                        <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-                          {teeth
-                            .filter((item) => item.arch === 'upper')
-                            .map((tooth) => (
-                              <button
-                                key={tooth.id}
-                                onClick={() => handleToggleTooth(tooth.id)}
-                                title={language === 'en' ? tooth.nameEn : tooth.nameId}
-                                className={`py-1.5 px-1 rounded text-center font-mono text-xs transition-all cursor-pointer border ${
-                                  tooth.visible
-                                    ? 'bg-[#00E5FF]/15 border-[#00E5FF] text-slate-900 dark:text-[#00E5FF] font-bold'
-                                    : 'bg-slate-200/50 dark:bg-[#112240] border-slate-300 dark:border-slate-800 text-slate-400 line-through'
-                                }`}
-                              >
-                                {tooth.fdiNumber}
-                              </button>
-                            ))}
-                        </div>
-                      </div>
-
-                      {/* Lower Mandibular Teeth */}
-                      <div className="p-3 rounded-lg bg-slate-50 dark:bg-[#0A192F] border border-slate-200 dark:border-slate-800 space-y-2">
-                        <p className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-                          {t.lowerTeethLabel}
-                        </p>
-                        <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
-                          {teeth
-                            .filter((item) => item.arch === 'lower')
-                            .map((tooth) => (
-                              <button
-                                key={tooth.id}
-                                onClick={() => handleToggleTooth(tooth.id)}
-                                title={language === 'en' ? tooth.nameEn : tooth.nameId}
-                                className={`py-1.5 px-1 rounded text-center font-mono text-xs transition-all cursor-pointer border ${
-                                  tooth.visible
-                                    ? 'bg-[#FFD700]/15 border-[#FFD700] text-amber-900 dark:text-[#FFD700] font-bold'
-                                    : 'bg-slate-200/50 dark:bg-[#112240] border-slate-300 dark:border-slate-800 text-slate-400 line-through'
-                                }`}
-                              >
-                                {tooth.fdiNumber}
-                              </button>
-                            ))}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                  {/* Visual 28-Tooth Anatomical Odontogram, Bite Alignment & Crown-Scatter Replacement Toolkit */}
+                  <TeethAlignmentOdontogram
+                    language={language}
+                    teeth={teeth}
+                    selectedToothId={selectedToothId}
+                    biteParams={biteParams}
+                    highlightReplacedCyan={highlightReplacedCyan}
+                    onSelectTooth={setSelectedToothId}
+                    onToggleToothVisibility={handleToggleToothVisibility}
+                    onSetAllTeethVisibility={handleSetAllTeethVisibility}
+                    onReplaceScatterCrownWithTooth={handleReplaceScatterCrownWithTooth}
+                    onUpdateToothTransform={handleUpdateToothTransform}
+                    onResetToothAlignment={handleResetToothAlignment}
+                    onChangeBiteParams={setBiteParams}
+                    onToggleHighlightReplacedCyan={setHighlightReplacedCyan}
+                  />
                 </div>
 
                 {/* Right 4 Columns: Hounsfield Thresholding, Scatter Cleanup Toolkit, Nerve & Prosthetic Controls, and 5-Step Guided Lab */}
@@ -1340,6 +1552,108 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* 1B. Multi-Layer Segmentation Separation (Cyan, Green, Yellow, Magenta) */}
+                  <div className="bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-3.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-[#0088AA] dark:text-[#00E5FF]" />
+                        <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                          {t.layersPanelTitle}
+                        </h2>
+                      </div>
+                      <button
+                        onClick={() => setActiveTool('paint_layer')}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-colors cursor-pointer ${
+                          activeTool === 'paint_layer'
+                            ? 'bg-[#00E5FF] text-[#0A192F] border-[#00E5FF]'
+                            : 'bg-slate-100 dark:bg-[#0A192F] text-slate-700 dark:text-slate-200 border-slate-300 dark:border-slate-700 hover:border-[#00E5FF]'
+                        }`}
+                      >
+                        <Paintbrush className="w-3 h-3" />
+                        <span>{t.toolPaintLayer}</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-2">
+                      {([1, 2, 3, 4] as SegmentationLayerId[]).map((lid) => {
+                        const meta = SEGMENTATION_LAYER_META[lid];
+                        const isSelected = activePaintLayer === lid;
+                        const isVisible = layerVisibility[lid];
+                        return (
+                          <div
+                            key={lid}
+                            className={`flex items-center justify-between gap-2 p-2 rounded-lg border transition-colors ${
+                              isSelected
+                                ? 'bg-slate-100 dark:bg-[#0A192F] border-[#00E5FF]'
+                                : 'bg-slate-50 dark:bg-[#0A192F]/60 border-slate-200 dark:border-slate-800'
+                            }`}
+                          >
+                            <button
+                              onClick={() => {
+                                setActivePaintLayer(lid);
+                                setActiveTool('paint_layer');
+                              }}
+                              className="flex items-center gap-2.5 text-left flex-1 min-w-0 cursor-pointer"
+                            >
+                              <span
+                                className="w-4 h-4 rounded shrink-0 border border-white/30"
+                                style={{ backgroundColor: meta.hex }}
+                              />
+                              <div className="min-w-0">
+                                <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                                  {language === 'en' ? meta.nameEn : meta.nameId}
+                                </div>
+                                <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
+                                  {layerVoxelCounts[lid].toLocaleString()} vox
+                                  {isSelected && activeTool === 'paint_layer'
+                                    ? language === 'en'
+                                      ? ' · Painting'
+                                      : ' · Aktif Cat'
+                                    : ''}
+                                </div>
+                              </div>
+                            </button>
+
+                            <button
+                              onClick={() => handleToggleLayerVisibility(lid)}
+                              title={isVisible ? 'Hide Layer' : 'Show Layer'}
+                              className={`p-1.5 rounded-md border transition-colors cursor-pointer ${
+                                isVisible
+                                  ? 'bg-slate-200/70 dark:bg-[#112240] border-slate-300 dark:border-slate-700 text-slate-800 dark:text-white'
+                                  : 'bg-transparent border-slate-200 dark:border-slate-800 text-slate-400'
+                              }`}
+                            >
+                              {isVisible ? (
+                                <Eye className="w-3.5 h-3.5" />
+                              ) : (
+                                <EyeOff className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="space-y-2 pt-1">
+                      <button
+                        onClick={handleAutoSeparateLayers}
+                        className="w-full py-2 px-3 rounded-lg bg-[#00E5FF]/15 border border-[#00E5FF]/60 hover:bg-[#00E5FF]/25 text-slate-900 dark:text-[#00E5FF] font-semibold text-xs transition-colors cursor-pointer"
+                      >
+                        {t.autoSeparateLayersBtn}
+                      </button>
+
+                      <label className="flex items-center justify-between text-xs cursor-pointer p-2 rounded-lg bg-slate-50 dark:bg-[#0A192F] border border-slate-200 dark:border-slate-800">
+                        <span className="font-medium">{t.color3dByLayers}</span>
+                        <input
+                          type="checkbox"
+                          checked={colorByLayers}
+                          onChange={(e) => setColorByLayers(e.target.checked)}
+                          className="w-4 h-4 accent-[#00E5FF]"
+                        />
+                      </label>
+                    </div>
+                  </div>
+
                   {/* 2. Scatter & Metal Artifact Cleanup Toolkit */}
                   <div className="bg-white dark:bg-[#112240] border border-slate-200 dark:border-slate-800 rounded-xl p-5 space-y-4">
                     <div className="flex items-center justify-between">
@@ -1416,9 +1730,16 @@ export default function App() {
                       </button>
                     </div>
 
-                    {activeTool === 'brush' && (
+                    {(activeTool === 'brush' || activeTool === 'paint_layer') && (
                       <div className="flex items-center justify-between gap-3 text-xs font-mono">
-                        <span>Brush Radius: {brushRadius} vox</span>
+                        <span>
+                          {activeTool === 'paint_layer'
+                            ? language === 'en'
+                              ? 'Layer Brush Radius'
+                              : 'Radius Kuas Lapisan'
+                            : 'Brush Radius'}
+                          : {brushRadius} vox
+                        </span>
                         <input
                           type="range"
                           min={1}
@@ -1600,6 +1921,17 @@ export default function App() {
             </div>
           )}
 
+          {activeSection === 'implant_design' && (
+            <ImplantDesignLab
+              language={language}
+              calibrationMm={calibrationMm}
+              onRecordAudit={(actionType, moduleName, details) =>
+                recordAuditAction(actionType, moduleName, details)
+              }
+              onNotify={showToast}
+            />
+          )}
+
           {activeSection === 'glossary' && (
             <AiGlossaryAssistant
               language={language}
@@ -1628,6 +1960,16 @@ export default function App() {
             />
           )}
         </main>
+
+        {/* Interactive DICOM Dataset Importer Modal */}
+        {showDicomModal && (
+          <DicomImportModal
+            language={language}
+            currentVolume={volume}
+            onClose={() => setShowDicomModal(false)}
+            onImportComplete={handleDicomImportComplete}
+          />
+        )}
 
         {/* Quiet Clinical Footer */}
         <footer className="border-t border-slate-200 dark:border-slate-800 px-6 py-4 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center justify-between gap-4 bg-white dark:bg-[#0A192F]">
